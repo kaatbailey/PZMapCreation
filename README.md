@@ -73,10 +73,11 @@ int64    offset[chunkCount]      64-bit, unlike B41's 32-bit table
 
 Header size is `12 + 8*chunkCount`, which equals `offset[0]` exactly.
 
-Chunk body — squares in z, x, y order across the 8×8 chunk, **driven by byte
-position, not a fixed level count**. Trailing empty levels are omitted from the
-file, so bodies vary in length and a fixed 16-level loop overruns into the next
-chunk.
+Chunk body — squares in z, x, y order across the 8×8 chunk. **Every chunk
+encodes the cell's full `levelCount`** (`maxLevel - minLevel + 1`), so all
+chunks in a cell cover the same number of squares. Body *lengths* still vary,
+because runs of empty squares compress; and `levelCount` varies per cell, which
+is why a hardcoded 16-level loop overruns on cells that encode fewer or more.
 
 ```
 int32 count
@@ -87,7 +88,8 @@ int32 count
 
 Verification: 4065/4065 cells, 4,162,560 chunks, every body ending exactly at
 the next chunk's offset. Squares covered per chunk is always a multiple of 64,
-confirming the z/x/y ordering.
+confirming the z/x/y ordering. Re-encoding reproduces every chunk byte for
+byte — see Writers.
 
 ### `.pack` — texture atlases
 
@@ -138,8 +140,33 @@ fails somewhere in 4065 samples.
 the original — a stronger test than parsing, since it proves nothing was
 silently dropped or reordered rather than merely consumed.
 
+**Verified byte-identical against the full retail dataset:**
+
+| | result |
+|---|---|
+| `.lotheader` | 4065 / 4065 cells |
+| `.lotpack` | 4065 / 4065 cells, 4,162,560 chunks |
+
 Chunk-body encoding has a degree of freedom that reading cannot reveal: whether
 runs of empty squares may span level boundaries, and whether a chunk encodes
 only the levels it needs or the cell's full level count. All four combinations
-are implemented as `LotPack.Policy` and scored against retail bytes; the one
-that reproduces every chunk is the encoder's real policy.
+are implemented as `LotPack.Policy` and scored against retail bytes.
+
+**`SPAN_LEVELS_FULL` is the encoder's policy** — every chunk encodes the cell's
+full `levelCount`, and runs of empty squares span level boundaries freely:
+
+```
+SPAN_LEVELS_MINIMAL       76.01%   3068/4065 files
+BREAK_AT_LEVEL_MINIMAL    75.65%   3068/4065 files
+SPAN_LEVELS_FULL         100.00%   4065/4065 files   <-- confirmed
+BREAK_AT_LEVEL_FULL       79.34%   3214/4065 files
+```
+
+The alternatives scoring 76–79% is what makes this conclusive: a merely
+plausible policy scores high, not perfect. Only the true one reproduces every
+chunk, including the outlier cells (`21_48` at `minLevel = -17`, `49_5` at 30
+levels).
+
+An earlier draft of this document claimed trailing empty levels are omitted.
+That was wrong — it was inferred from variable body lengths, and the round-trip
+disproved it.
