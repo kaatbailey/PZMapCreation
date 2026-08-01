@@ -30,6 +30,7 @@ public class SelfTest {
         testHeaderWriterRoundTrip(tmp);
         testWriterCatchesDroppedField(tmp);
         testLotPackWriterRoundTrip(tmp);
+        testTileBin(tmp);
         System.out.println(failures == 0 ? "\nALL TESTS PASSED" : "\n" + failures + " FAILURE(S)");
         System.exit(failures == 0 ? 0 : 1);
     }
@@ -366,6 +367,88 @@ public class SelfTest {
         byte[] span = lp.encodeChunk(c0, LotPack.Policy.SPAN_LEVELS_MINIMAL);
         byte[] full = lp.encodeChunk(c0, LotPack.Policy.SPAN_LEVELS_FULL);
         check("MINIMAL and FULL differ", !java.util.Arrays.equals(span, full));
+    }
+
+    static void nl(ByteArrayOutputStream o, String s) {
+        o.writeBytes(s.getBytes(StandardCharsets.ISO_8859_1));
+        o.write('\n');
+    }
+
+    static void testTileBin(Path dir) throws Exception {
+        System.out.println("\n[binary .tiles: tdef parser]");
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        o.writeBytes("tdef".getBytes(StandardCharsets.ISO_8859_1));
+        i32(o, 1);
+        i32(o, 1);                       // one tileset
+        nl(o, "walls_exterior_house_01");
+        nl(o, "walls_exterior_house_01.png");
+        i32(o, 8);                       // width
+        i32(o, 16);                      // height
+        i32(o, 42);                      // id
+        int w = 8, hgt = 16;
+        i32(o, w * hgt);                 // tileCount: every sheet position
+        for (int i = 0; i < w * hgt; i++) {
+            if (i == 12) {
+                i32(o, 3);
+                nl(o, "Facing");  nl(o, "W");
+                nl(o, "wall");    nl(o, "");     // valueless flag
+                nl(o, "solid");   nl(o, "");
+            } else if (i == 100) {
+                i32(o, 1);
+                nl(o, "WindowShape"); nl(o, "1");
+            } else {
+                i32(o, 0);               // propertyless tile
+            }
+        }
+
+        Path f = dir.resolve("t.tiles");
+        Files.write(f, o.toByteArray());
+
+        TileBin tb = TileBin.read(f, TileBin.TileShape.COUNT_ONLY, 0);
+        check("magic + version", tb.version == 1);
+        check("tileset count", tb.tilesets.size() == 1);
+        check("tileset dims", tb.tilesets.get(0).width == 8 && tb.tilesets.get(0).height == 16);
+        check("tileset id", tb.tilesets.get(0).id == 42);
+        check("every sheet position has a record", tb.byName.size() == 8 * 16);
+        check("propertyless tiles kept",
+                tb.byName.get("walls_exterior_house_01_0").props.isEmpty());
+
+        TileDefs.Tile t12 = tb.byName.get("walls_exterior_house_01_12");
+        check("tile name from index", t12 != null);
+        check("index -> xy", t12.x == 12 % 8 && t12.y == 12 / 8);
+        check("valued property", "W".equals(t12.get("Facing")));
+        check("valueless flag stored", t12.flag("wall") && "".equals(t12.get("wall")));
+        check("solid() helper", t12.solid());
+        check("second tile", "1".equals(
+                tb.byName.get("walls_exterior_house_01_100").get("WindowShape")));
+
+        // Wrong shape must be rejected, or the shape search proves nothing.
+        boolean rejected = false;
+        try { TileBin.read(f, TileBin.TileShape.XY_COUNT, 0); }
+        catch (LE.ParseException e) { rejected = true; }
+        check("wrong tile shape rejected", rejected);
+
+        boolean extraRejected = false;
+        try { TileBin.read(f, TileBin.TileShape.COUNT_ONLY, 1); }
+        catch (LE.ParseException e) { extraRejected = true; }
+        check("wrong prelude length rejected", extraRejected);
+
+        // Trailing garbage must be caught rather than ignored.
+        byte[] padded = java.util.Arrays.copyOf(o.toByteArray(), o.size() + 4);
+        Path f2 = dir.resolve("t2.tiles");
+        Files.write(f2, padded);
+        boolean caught = false;
+        try { TileBin.read(f2, TileBin.TileShape.COUNT_ONLY, 0); }
+        catch (LE.ParseException e) { caught = e.getMessage().contains("trailing"); }
+        check("trailing data detected", caught);
+
+        boolean badMagic = false;
+        byte[] bm = o.toByteArray();
+        bm[0] = 'X';
+        Files.write(dir.resolve("t3.tiles"), bm);
+        try { TileBin.read(dir.resolve("t3.tiles"), TileBin.TileShape.COUNT_ONLY, 0); }
+        catch (LE.ParseException e) { badMagic = true; }
+        check("bad magic rejected", badMagic);
     }
 
     static void i32(ByteArrayOutputStream o, int v) {

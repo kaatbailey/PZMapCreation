@@ -25,6 +25,11 @@ public final class Probe {
             case "survey"    -> Survey.run(Path.of(args[1]));
             case "roundtrip" -> RoundTrip.run(Path.of(args[1]),
                                     args.length > 2 ? Integer.parseInt(args[2]) : 0);
+            case "tilesolve" -> TileBin.solve(Path.of(args[1]),
+                                    args.length > 2 ? Path.of(args[2]) : null);
+            case "tileall"   -> TileBin.solveAll(Path.of(args[1]));
+            case "tilebin"   -> TileBinAnalysis.run(Path.of(args[1]),
+                                    args.length > 2 ? Path.of(args[2]) : null);
             case "tiles"     -> TileDefs.run(Path.of(args[1]),
                                     args.length > 2 ? Path.of(args[2]) : null);
             case "mapdir"    -> mapdir(Path.of(args[1]));
@@ -43,6 +48,9 @@ public final class Probe {
               survey    <media/maps/MapName>            verify every cell in a map
               tiles     <media dir> [file.lotheader]    parse tile properties, join to a cell
               roundtrip <media/maps/MapName> [limit]    read->write->byte-compare
+              tilebin   <file.tiles> [file.tiles.txt]   analyse binary tile definitions
+              tilesolve <file.tiles> [file.tiles.txt]   solve + verify one binary file
+              tileall   <media dir>                     parse every binary .tiles
               mapdir    <media/maps/MapName>            summarise a whole map folder
 
             Typical starting point:
