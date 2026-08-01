@@ -40,6 +40,14 @@ public final class LE {
         return v;
     }
 
+    public long i64() {
+        require(8);
+        long v = 0;
+        for (int i = 7; i >= 0; i--) v = (v << 8) | (b[p + i] & 0xFFL);
+        p += 8;
+        return v;
+    }
+
     /** Peek an i32 without advancing. */
     public int peekI32() { int save = p; int v = i32(); p = save; return v; }
 

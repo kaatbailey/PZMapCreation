@@ -20,7 +20,13 @@ public final class Probe {
         switch (args[0]) {
             case "pack"      -> pack(Path.of(args[1]), args);
             case "lotheader" -> lotheader(Path.of(args[1]), has(args, "--scan"));
-            case "lotpack"   -> lotpack(Path.of(args[1]), Path.of(args[2]));
+            case "lotpack"   -> LotPackAnalysis.run(Path.of(args[1]), Path.of(args[2]));
+            case "trailer"   -> TrailerAnalysis.run(Path.of(args[1]));
+            case "survey"    -> Survey.run(Path.of(args[1]));
+            case "roundtrip" -> RoundTrip.run(Path.of(args[1]),
+                                    args.length > 2 ? Integer.parseInt(args[2]) : 0);
+            case "tiles"     -> TileDefs.run(Path.of(args[1]),
+                                    args.length > 2 ? Path.of(args[2]) : null);
             case "mapdir"    -> mapdir(Path.of(args[1]));
             default          -> { usage(); System.exit(2); }
         }
@@ -33,6 +39,10 @@ public final class Probe {
               pack      <file.pack> [--extract <dir>]   parse atlas, verify PNG anchors
               lotheader <file.lotheader> [--scan]       parse header, report alignment
               lotpack   <world_X_Y.lotpack> <X_Y.lotheader>
+              trailer   <file.lotheader>                decide the B42 trailer layout
+              survey    <media/maps/MapName>            verify every cell in a map
+              tiles     <media dir> [file.lotheader]    parse tile properties, join to a cell
+              roundtrip <media/maps/MapName> [limit]    read->write->byte-compare
               mapdir    <media/maps/MapName>            summarise a whole map folder
 
             Typical starting point:
@@ -105,26 +115,41 @@ public final class Probe {
         if (scan) { scanForCellSize(file); return; }
         try {
             LotHeader h = LotHeader.read(file);
-            System.out.println("version:        " + h.version);
-            System.out.println("tile names:     " + h.tileNames.size());
-            System.out.println("cell:           " + h.width + "x" + h.height
-                    + "  levels=" + h.levels
-                    + "   -> " + (h.width == 300 ? "Build 41 layout" : "Build 42 layout"));
-            System.out.println("pad bytes after tile table: " + h.padBytesSkipped
-                    + "   (metaOffset=" + h.metaOffset + ")");
-            System.out.println("rooms:          " + h.rooms.size());
-            System.out.println("buildings:      " + h.buildings.size());
-            System.out.println("density grid:   "
-                    + (h.zombieDensity == null ? "not read" : h.zombieDensity.length + " bytes"));
-            System.out.println("\nfirst tile names:");
-            for (int i = 0; i < Math.min(8, h.tileNames.size()); i++) {
+            System.out.println("variant:      " + (h.b42 ? "B42 (LOTH magic)" : "B41 (legacy)"));
+            System.out.println("version:      " + h.version);
+            System.out.println("tile names:   " + h.tileNames.size());
+            if (h.width > 0) {
+                System.out.println("cell:         " + h.width + "x" + h.height + " levels=" + h.levels);
+            } else {
+                System.out.println("cell:         NOT STORED IN THIS FILE");
+            }
+            System.out.println("trailer at:   " + h.trailerOffset
+                    + "   (" + h.trailer.length + " unidentified bytes)");
+            System.out.println("\nfirst/last tile names:");
+            for (int i = 0; i < Math.min(4, h.tileNames.size()); i++)
                 System.out.println("   [" + i + "] " + h.tileNames.get(i));
+            if (h.tileNames.size() > 4)
+                System.out.println("   [" + (h.tileNames.size() - 1) + "] "
+                        + h.tileNames.get(h.tileNames.size() - 1));
+
+            if (h.trailer.length > 0) {
+                LE t = new LE(h.trailer);
+                System.out.println("\n--- trailer as int32 (offset relative to trailer start) ---");
+                int n = Math.min(24, h.trailer.length / 4);
+                for (int i = 0; i < n; i++) {
+                    int v = t.i32();
+                    System.out.printf("   +%-4d  %-12d  0x%08X%n", i * 4, v, v);
+                }
+                System.out.println("\n--- trailer hex (first 256 bytes) ---");
+                System.out.println(t.hexDump(0, 256));
+                if (h.trailer.length > 256) {
+                    System.out.println("--- trailer hex (last 128 bytes) ---");
+                    System.out.println(t.hexDump(Math.max(0, h.trailer.length - 128), 128));
+                }
             }
             if (!h.warnings.isEmpty()) {
-                System.out.println("\nWARNINGS (inferred sections that didn't hold up):");
+                System.out.println("WARNINGS:");
                 for (String w : h.warnings) System.out.println("  ! " + w);
-            } else {
-                System.out.println("\nno warnings -- inferred metadata layout held for this file.");
             }
         } catch (LE.ParseException e) {
             System.out.println("PARSE FAILED: " + e.getMessage());
@@ -152,64 +177,6 @@ public final class Probe {
     }
 
     // ------------------------------------------------------------------
-
-    static void lotpack(Path packFile, Path headerFile) throws Exception {
-        LotHeader h = LotHeader.read(headerFile);
-        System.out.println("== .lotpack: " + packFile.getFileName()
-                + "  (" + Files.size(packFile) + " bytes)");
-        System.out.println("using header: " + h.width + "x" + h.height + " levels=" + h.levels);
-
-        for (int chunkSize : new int[]{10, 8, 16, 32}) {
-            if (h.width % chunkSize != 0) continue;
-            System.out.println("\n-- trying chunk size " + chunkSize + " ("
-                    + (h.width / chunkSize) + "x" + (h.height / chunkSize) + " chunks)");
-            try {
-                LotPack lp = LotPack.read(packFile, h.width, h.height, h.levels, chunkSize);
-                if (lp.warnings.isEmpty()) {
-                    System.out.println("   offset table VALID (version=" + lp.version + ")");
-                    try {
-                        LotPack.Chunk c = lp.readChunk(0, 0);
-                        int nonEmpty = 0;
-                        for (int z = 0; z < h.levels; z++)
-                            for (int x = 0; x < chunkSize; x++)
-                                for (int y = 0; y < chunkSize; y++)
-                                    if (c.tiles[z][x][y] != null) nonEmpty++;
-                        System.out.println("   chunk(0,0) parsed: " + nonEmpty + " non-empty squares");
-                        printSample(c, h, chunkSize);
-                        System.out.println("   >>> CHUNK SIZE " + chunkSize + " IS CORRECT <<<");
-                        return;
-                    } catch (LE.ParseException e) {
-                        System.out.println("   offsets valid but chunk body failed: " + e.getMessage());
-                    }
-                } else {
-                    for (String w : lp.warnings) System.out.println("   ! " + w);
-                }
-            } catch (LE.ParseException e) {
-                System.out.println("   failed: " + e.getMessage());
-            }
-        }
-        System.out.println("\nNo chunk size worked. Dump the header region and eyeball it:");
-        LE r = LE.of(packFile);
-        System.out.println(r.hexDump(0, 128));
-    }
-
-    static void printSample(LotPack.Chunk c, LotHeader h, int chunkSize) {
-        System.out.println("   sample squares (z=0):");
-        int shown = 0;
-        for (int x = 0; x < chunkSize && shown < 4; x++) {
-            for (int y = 0; y < chunkSize && shown < 4; y++) {
-                int[] t = c.tiles[0][x][y];
-                if (t == null || t.length == 0) continue;
-                StringBuilder sb = new StringBuilder();
-                for (int idx : t) {
-                    sb.append(idx >= 0 && idx < h.tileNames.size()
-                            ? h.tileNames.get(idx) : ("?" + idx)).append(" ");
-                }
-                System.out.printf("      (%d,%d) room=%d : %s%n", x, y, c.room[0][x][y], sb.toString().trim());
-                shown++;
-            }
-        }
-    }
 
     // ------------------------------------------------------------------
 
