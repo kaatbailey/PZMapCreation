@@ -1,9 +1,17 @@
 # pzformat
 
-Java parsers for Project Zomboid **Build 42** map files, reverse-engineered from
-retail 42.20 data and verified against all 4065 cells of Muldraugh, KY.
+Java parsers and writers for Project Zomboid **Build 42** map files, reverse
+engineered from retail 42.20 data and verified against the full vanilla dataset.
 
 No dependencies. Java 17+.
+
+| format | verification |
+|---|---|
+| `.lotheader` | 4065 / 4065 cells, read and write byte-identical |
+| `.lotpack` | 4065 / 4065 cells, 4,162,560 chunks, read and write byte-identical |
+| `.pack` | round-trips byte-identical |
+| `.tiles` binary | 73,644 tiles; all 37,060 with a text sibling match 100% |
+| `.tiles` text | 33,568 tiles, 216 property keys |
 
 ```bash
 javac -d out $(find src -name '*.java')
@@ -106,15 +114,71 @@ Self-validating: each page's entry table is followed by real PNG bytes, so
 landing on PNG magic proves the table parsed correctly. `Probe pack` also
 re-serialises and byte-compares, confirming the writer.
 
+### `.tiles` — tile properties (binary) — CONFIRMED
+
+The semantic layer: what a tile *is*, as opposed to which sprite it draws.
+Vanilla ships both a binary `.tiles` and a plaintext `.tiles.txt`; mods
+generally ship only the binary, so the binary parser is what makes modded maps
+workable.
+
+```
+char[4]   "tdef"
+int32     version          (1)
+int32     tilesetCount
+tileset:
+    string  name            "e_americanhollyJUMBO_1"
+    string  imageFile       "e_americanhollyJUMBO_1.png"
+    int32   width, height   in tiles
+    int32   id
+    int32   tileCount       = width * height
+    tile:                   one per sheet position, in index order
+        int32   propCount
+        propCount x (string key, string value)
+```
+
+All strings are `'\n'`-terminated. A **valueless key is a boolean flag** —
+stored as a key followed by an empty value (`solid` → `""`).
+
+There is no index or xy field per tile: records appear in index order and cover
+every sheet position, so `index = y * width + x` and the tile name is
+`tilesetName + "_" + index`.
+
+**The binary holds roughly twice as many tiles as its `.txt` sibling** — the
+text dump omits propertyless tiles, the binary does not. This is expected, not
+a parse error.
+
+Verification: 12 candidate layouts were tried (tileset prelude length 0–2 ×
+four per-tile shapes); exactly one consumes files to the exact byte. Across the
+7 retail binaries — 73,644 tiles — all 37,060 tiles present in a text sibling
+match property-for-property, and the 2 files with no sibling parse cleanly.
+
+### `.tiles.txt` — tile properties (text)
+
+Human-readable sibling, parsed by `TileDefs`. Nested `tileset { ... tile { ... } }`
+blocks, `key = value` lines, and a `//` comment naming each tile — which was
+used to confirm the index formula against all 33,568 entries.
+
+Joins to map data at 99.39% on a dense cell; the remainder are tiles that exist
+in the atlas but carry no properties.
+
+Useful keys for an editor: `wall`, `WallOverlay`, `Facing`, `attachedN`,
+`attachedW`, `DoorWallN`, `DoorWallW`, `WindowShape`, `container`,
+`ContainerCapacity`, `solid`, `solidtrans`, `BlocksPlacement`, `attachedFloor`.
+
 ## Commands
 
 ```
 Probe pack      <file.pack> [--extract <dir>]
 Probe lotheader <file.lotheader>
 Probe lotpack   <world_X_Y.lotpack> <X_Y.lotheader>
-Probe trailer   <file.lotheader>          hypothesis search over trailer layout
-Probe survey    <media/maps/MapName>      verify every cell in a map
-Probe mapdir    <media/maps/MapName>      folder inventory
+Probe trailer   <file.lotheader>            hypothesis search over trailer layout
+Probe survey    <media/maps/MapName>        verify every cell in a map
+Probe roundtrip <media/maps/MapName> [n]    read -> write -> byte-compare
+Probe tiles     <media dir> [lotheader]     text tile properties, join to a cell
+Probe tilebin   <file.tiles> [.txt]         structural analysis of a binary
+Probe tilesolve <file.tiles> [.txt]         solve + verify one binary
+Probe tileall   <media dir>                 parse every binary .tiles
+Probe mapdir    <media/maps/MapName>        folder inventory
 ```
 
 ## Method
@@ -127,11 +191,19 @@ fails somewhere in 4065 samples.
 
 ## Next
 
-1. Binary `.tiles` parsing. `TileDefs` currently reads the plaintext
-   `*.tiles.txt` siblings, which vanilla ships but mods generally do not.
-   The 33,568 text-parsed tiles are ground truth to validate a binary parser.
-2. TMX interop with the official tools.
-3. The 3-int32 room object records are read but not interpreted.
+The read and write path is complete and verified. What remains is the editor
+rather than the formats.
+
+1. A `Cell` model with an undo journal, decoupled from the file formats, with
+   tile properties indexed by the join keys above. This is where auto
+   wall-joining and room validation live.
+2. A fast round-trip regression check. `Probe roundtrip` re-parses every chunk
+   once per policy and takes ~14 minutes on the full map; now that the policy
+   is known, a single-policy version reusing parsed chunks should run in
+   seconds and serve as the post-change regression test.
+3. TMX interop with the official tools.
+4. The 3-int32 room object records are read but not interpreted.
+5. `.tiles` writers, for emitting modded tile definitions.
 
 ## Writers
 
