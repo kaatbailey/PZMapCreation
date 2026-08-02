@@ -11,14 +11,26 @@ import java.util.List;
 /**
  * Project Zomboid .pack texture atlas.
  *
- * CONFIDENCE: HIGH. Layout is publicly documented (TIS forums "PZ Unpacker",
- * ScottyThePilot/pz-pack, cdaragorn/ProjectZomboidPackManager) and is stable
- * across builds:
+ * TWO LAYOUTS ship in 42.20 and both are handled:
  *
+ *   B42 ("PZPK"):  char[4] "PZPK", int32 version, int32 numPages,
+ *                  and one extra int32 per page after its entry count.
+ *   B41 (legacy):  starts directly at numPages, no per-page extra.
+ *
+ * The entry layout is identical in both.
+ *
+ * NOTE: an earlier version of this reader handled only the legacy layout and
+ * was "verified" solely against fixtures this project generated itself — which
+ * proves the reader matches the writer and nothing else. Every retail 42.20
+ * atlas failed. Fixtures cannot substitute for real files.
+ *
+ *   [optional] char[4]   "PZPK"
+ *   [optional] int32     version
  *   int32                numPages
  *   page * numPages:
  *       lenString        pageName
  *       int32            numEntries
+ *       [PZPK] int32     unknown (1 in every page observed)
  *       entry * numEntries:
  *           lenString    entryName
  *           int32 x, y, w, h, ox, oy, fx, fy
@@ -67,8 +79,28 @@ public final class PackFile {
         return read(LE.of(file));
     }
 
+    public static final String MAGIC = "PZPK";
+
+    /** True when the file carried the B42 "PZPK" header. */
+    public boolean pzpk;
+    public int version;
+    /** Per-page int32 of unknown meaning, present only in PZPK files. */
+    public final List<Integer> pageUnknown = new ArrayList<>();
+
     public static PackFile read(LE r) {
         PackFile pack = new PackFile();
+
+        // B42 prepends "PZPK" + version and adds one int32 per page. B41 files
+        // start straight at the page count. Both still ship in 42.20.
+        byte[] lead = r.bytes(4);
+        String magic = new String(lead, java.nio.charset.StandardCharsets.ISO_8859_1);
+        if (MAGIC.equals(magic)) {
+            pack.pzpk = true;
+            pack.version = r.i32();
+        } else {
+            r.seek(0);
+        }
+
         int numPages = r.i32();
         if (numPages < 0 || numPages > 100_000) {
             throw new LE.ParseException("implausible page count " + numPages
@@ -78,6 +110,7 @@ public final class PackFile {
             Page page = new Page();
             page.name = r.lenString();
             int numEntries = r.i32();
+            if (pack.pzpk) pack.pageUnknown.add(r.i32());
             if (numEntries < 0 || numEntries > 1_000_000) {
                 throw new LE.ParseException("page '" + page.name + "': implausible entry count "
                         + numEntries + " at offset " + (r.pos() - 4));
@@ -109,10 +142,16 @@ public final class PackFile {
 
     public byte[] write() {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
+        if (pzpk) {
+            out.writeBytes(MAGIC.getBytes(StandardCharsets.ISO_8859_1));
+            wI32(out, version);
+        }
         wI32(out, pages.size());
-        for (Page page : pages) {
+        for (int i = 0; i < pages.size(); i++) {
+            Page page = pages.get(i);
             wStr(out, page.name);
             wI32(out, page.entries.size());
+            if (pzpk) wI32(out, i < pageUnknown.size() ? pageUnknown.get(i) : 1);
             for (Entry e : page.entries) {
                 wStr(out, e.name);
                 wI32(out, e.x);  wI32(out, e.y);  wI32(out, e.w);  wI32(out, e.h);

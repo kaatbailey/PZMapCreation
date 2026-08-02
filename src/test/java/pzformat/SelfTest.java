@@ -20,6 +20,8 @@ public class SelfTest {
     public static void main(String[] args) throws Exception {
         Path tmp = Files.createTempDirectory("pzfmt");
         testPackRoundTrip(tmp);
+        testPackPZPK(tmp);
+        testPackLegacyStillWorks(tmp);
         testPackDetectsMisparse(tmp);
         testLotHeaderAlignment(tmp, 0);
         testLotHeaderAlignment(tmp, 1);
@@ -81,6 +83,57 @@ public class SelfTest {
         check("atlas dims from png header",
                 back.pages.get(0).pngWidth() == 320 && back.pages.get(0).pngHeight() == 128);
         check("re-serialise byte identical",
+                java.util.Arrays.equals(Files.readAllBytes(f), back.write()));
+    }
+
+    /** B42 "PZPK" atlases: magic, version, and a per-page extra int32. */
+    static void testPackPZPK(Path dir) throws Exception {
+        System.out.println("\n[.pack B42 PZPK layout]");
+        PackFile pf = new PackFile();
+        pf.pzpk = true;
+        pf.version = 1;
+        for (int pi = 0; pi < 2; pi++) {
+            PackFile.Page page = new PackFile.Page();
+            page.name = "Tiles2x" + pi;
+            for (int e = 0; e < 3; e++) {
+                PackFile.Entry en = new PackFile.Entry();
+                en.name = "blood_floor_large_0" + e;
+                en.x = 415; en.y = 916; en.w = 34; en.h = 18;
+                en.ox = 13; en.oy = 4; en.fx = 64; en.fy = 32;
+                page.entries.add(en);
+            }
+            page.png = png(128, 64);
+            pf.pages.add(page);
+            pf.pageUnknown.add(1);
+        }
+        Path f = dir.resolve("pzpk.pack");
+        Files.write(f, pf.write());
+
+        byte[] raw = Files.readAllBytes(f);
+        check("file starts with PZPK", new String(raw, 0, 4,
+                StandardCharsets.ISO_8859_1).equals("PZPK"));
+
+        PackFile back = PackFile.read(f);
+        check("detected as PZPK", back.pzpk);
+        check("version", back.version == 1);
+        check("pages", back.pages.size() == 2);
+        check("entries", back.pages.get(1).entries.size() == 3);
+        check("entry rect survives", back.pages.get(0).entries.get(0).x == 415
+                && back.pages.get(0).entries.get(0).fy == 32);
+        check("per-page extra int32 kept", back.pageUnknown.size() == 2
+                && back.pageUnknown.get(0) == 1);
+        check("round trips byte-identical",
+                java.util.Arrays.equals(raw, back.write()));
+    }
+
+    /** Legacy atlases without magic must still parse. */
+    static void testPackLegacyStillWorks(Path dir) throws Exception {
+        System.out.println("\n[.pack legacy layout still parses]");
+        Path f = dir.resolve("test.pack");
+        PackFile back = PackFile.read(f);
+        check("not flagged PZPK", !back.pzpk);
+        check("pages parsed", back.pages.size() == 3);
+        check("round trips byte-identical",
                 java.util.Arrays.equals(Files.readAllBytes(f), back.write()));
     }
 

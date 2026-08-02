@@ -25,6 +25,9 @@ public final class Probe {
             case "survey"    -> Survey.run(Path.of(args[1]));
             case "roundtrip" -> RoundTrip.run(Path.of(args[1]),
                                     args.length > 2 ? Integer.parseInt(args[2]) : 0);
+            case "packinfo"  -> PackAnalysis.run(Path.of(args[1]));
+            case "sprites"   -> SpriteJoin.run(Path.of(args[1]),
+                                    args.length > 2 ? Path.of(args[2]) : null);
             case "spawnmark" -> SpawnMark.run(Path.of(args[1]), Path.of(args[2]),
                                     Path.of(args[3]),
                                     args.length > 4 ? Integer.parseInt(args[4]) : 12);
@@ -70,6 +73,8 @@ public final class Probe {
               testmod   <mapdir> <X_Y> <modsdir> [name] [x y size]
               locate    <mapdir> <worldX> <worldY>       what is at this world coordinate?
               spawnmark <mapdir> <mediadir> <outdir> [size]  paint every spawn point
+              sprites   <texturepacks dir> [lotheader]  do tile names resolve to sprites?
+              packinfo  <file.pack | dir>               structural analysis of atlases
               testmodat <mapdir> <mediadir> <modsdir> <name> <worldX> <worldY> [size]
                                                         edit at a world coordinate
               mapdir    <media/maps/MapName>            summarise a whole map folder
