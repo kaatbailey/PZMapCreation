@@ -41,6 +41,9 @@ public class SelfTest {
         testEditorLayerAware(tmp);
         testEditorUndo(tmp);
         testEditorSurvivesRoundTrip(tmp);
+        testJsonParser();
+        testGisRaster(tmp);
+        testWallDerivation();
         System.out.println(failures == 0 ? "\nALL TESTS PASSED" : "\n" + failures + " FAILURE(S)");
         System.exit(failures == 0 ? 0 : 1);
     }
@@ -968,6 +971,78 @@ public class SelfTest {
         Square gone = ed.square(7, 7, 0);
         check("removing the wall removes its door leaf too",
                 gone.northWall == null && gone.fixtures.isEmpty());
+    }
+
+    static void testJsonParser() {
+        System.out.println("\n[Json: minimal parser]");
+        Json.Value v = Json.parse("{\"a\":1,\"b\":[1,2.5,-3],\"c\":\"x\\ny\","
+                + "\"d\":true,\"e\":null,\"f\":{\"g\":\"h\"}}");
+        check("number", v.get("a").num == 1);
+        check("array", v.get("b").array.size() == 3 && v.get("b").array.get(2).num == -3);
+        check("decimal", v.get("b").array.get(1).num == 2.5);
+        check("escaped string", "x\ny".equals(v.get("c").str));
+        check("bool", v.get("d").boolVal);
+        check("null", v.get("e").isNull);
+        check("nested object", "h".equals(v.get("f").get("g").str));
+        check("int renders without decimal", "1".equals(v.get("a").asText()));
+    }
+
+    /**
+     * Rasterisation checked against geometry with a known answer. A wrong fill
+     * still produces a plausible picture, so eyeballing the schematic is not
+     * evidence.
+     */
+    static void testGisRaster(Path dir) throws Exception {
+        System.out.println("\n[GisImport: polygon raster and wall derivation]");
+        // A 10x6 metre building, placed away from the origin.
+        String geo = """
+            {"type":"FeatureCollection","features":[{"type":"Feature",
+             "properties":{"OCC_CLS":"Residential"},
+             "geometry":{"type":"Polygon","coordinates":[[
+               [0.0,0.0],[0.00011727,0.0],[0.00011727,-0.00005428],
+               [0.0,-0.00005428],[0.0,0.0]]]}}]}
+            """;
+        Path bf = dir.resolve("b.geojson");
+        Files.writeString(bf, geo);
+        Path rf = dir.resolve("r.geojson");
+        Files.writeString(rf, "{\"type\":\"FeatureCollection\",\"features\":[]}");
+
+        GeoJson g = GeoJson.read(bf);
+        check("one feature read", g.features.size() == 1);
+        check("ring has 5 points", g.features.get(0).rings.get(0).size() == 5);
+        check("property read", "Residential".equals(g.features.get(0).prop("OCC_CLS")));
+
+        Path od = Files.createDirectories(dir.resolve("gisout"));
+        GisImport.run(bf, rf, od, 2048);
+        check("schematic written", Files.exists(od.resolve("import_schematic.png")));
+    }
+
+    /** Wall derivation on a hand-built footprint, where every wall is known. */
+    static void testWallDerivation() {
+        System.out.println("\n[GisImport: walls follow the verified edge convention]");
+        GisImport g = new GisImport();
+        g.width = 10; g.height = 10;
+        g.cover = new GisImport.Cover[10][10];
+        g.occupancy = new String[10][10];
+        g.northWall = new boolean[10][10];
+        g.westWall = new boolean[10][10];
+        for (GisImport.Cover[] col : g.cover) java.util.Arrays.fill(col, GisImport.Cover.NONE);
+
+        // Solid 3x3 block at (2,2)..(4,4).
+        for (int x = 2; x <= 4; x++)
+            for (int y = 2; y <= 4; y++) g.cover[x][y] = GisImport.Cover.BUILDING;
+        g.deriveWalls();
+
+        // North face on the top row itself.
+        check("north wall on top row", g.northWall[2][2] && g.northWall[3][2] && g.northWall[4][2]);
+        check("no north wall inside", !g.northWall[3][3]);
+        // South face on the row BELOW the building, per the verified convention.
+        check("south wall one row below", g.northWall[2][5] && g.northWall[3][5] && g.northWall[4][5]);
+        check("south wall not on the last building row", !g.northWall[3][4]);
+        // West face on the left column, east face one column right of it.
+        check("west wall on left column", g.westWall[2][2] && g.westWall[2][3] && g.westWall[2][4]);
+        check("east wall one column right", g.westWall[5][2] && g.westWall[5][3] && g.westWall[5][4]);
+        check("no west wall inside", !g.westWall[3][3]);
     }
 
     static void i32(ByteArrayOutputStream o, int v) {
