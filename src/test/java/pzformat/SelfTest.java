@@ -38,6 +38,9 @@ public class SelfTest {
         testChunkOrientation(tmp);
         testIsoProjection();
         testSquareStructureBeatsOverlay(tmp);
+        testEditorLayerAware(tmp);
+        testEditorUndo(tmp);
+        testEditorSurvivesRoundTrip(tmp);
         System.out.println(failures == 0 ? "\nALL TESTS PASSED" : "\n" + failures + " FAILURE(S)");
         System.exit(failures == 0 ? 0 : 1);
     }
@@ -825,6 +828,146 @@ public class SelfTest {
         Square door = Square.at(c, ti, 5, 5, 0);
         check("north edge flagged as doorway", door.northIsDoorway);
         check("doorway is still a wall", "mix_6".equals(door.northWall));
+    }
+
+    /** Tile set covering every layer, for editor tests. */
+    static TileIndex editorTiles(Path dir) throws Exception {
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        o.writeBytes("tdef".getBytes(StandardCharsets.ISO_8859_1));
+        i32(o, 1); i32(o, 1);
+        nl(o, "ed"); nl(o, "ed.png");
+        i32(o, 8); i32(o, 8); i32(o, 1); i32(o, 8);
+        i32(o, 1); nl(o, "attachedFloor"); nl(o, "");                    // 0 floor
+        i32(o, 2); nl(o, "wall"); nl(o, ""); nl(o, "WallN"); nl(o, "");  // 1 north wall
+        i32(o, 2); nl(o, "wall"); nl(o, ""); nl(o, "WallW"); nl(o, "");  // 2 west wall
+        i32(o, 2); nl(o, "container"); nl(o, "fridge");
+                   nl(o, "solid"); nl(o, "");                            // 3 object
+        i32(o, 2); nl(o, "WallOverlay"); nl(o, ""); nl(o, "attachedN"); nl(o, ""); // 4 grime
+        i32(o, 1); nl(o, "attachedFloor"); nl(o, "");                    // 5 other floor
+        i32(o, 2); nl(o, "wall"); nl(o, ""); nl(o, "DoorWallN"); nl(o, ""); // 6 doorway
+        i32(o, 2); nl(o, "doorN"); nl(o, ""); nl(o, "wall"); nl(o, "");  // 7 door leaf
+        Path tf = dir.resolve("ed.tiles");
+        Files.write(tf, o.toByteArray());
+        TileBin tb = TileBin.read(tf, TileBin.TileShape.COUNT_ONLY, 0);
+        TileIndex ti = new TileIndex();
+        ti.byName.putAll(tb.byName);
+        return ti;
+    }
+
+    static void testEditorLayerAware(Path dir) throws Exception {
+        System.out.println("\n[CellEditor: operations target one layer]");
+        Path d = Files.createDirectories(dir.resolve("edit1"));
+        writeSmallCell(d, "0_0");
+        CellData c = CellData.load(d.resolve("world_0_0.lotpack"), d.resolve("0_0.lotheader"));
+        TileIndex ti = editorTiles(d);
+        CellEditor ed = new CellEditor(c, ti);
+
+        // A square with floor, both walls, grime and a fridge.
+        c.setSquare(4, 4, 0, new int[]{
+                c.tileIndex("ed_0"), c.tileIndex("ed_1"), c.tileIndex("ed_2"),
+                c.tileIndex("ed_4"), c.tileIndex("ed_3")}, 3);
+
+        Square before = ed.square(4, 4, 0);
+        check("setup: floor, N wall, W wall present",
+                "ed_0".equals(before.floor) && "ed_1".equals(before.northWall)
+             && "ed_2".equals(before.westWall));
+
+        ed.setFloor(4, 4, 0, "ed_5");
+        Square afterFloor = ed.square(4, 4, 0);
+        check("floor replaced", "ed_5".equals(afterFloor.floor));
+        check("north wall untouched by floor change", "ed_1".equals(afterFloor.northWall));
+        check("west wall untouched by floor change", "ed_2".equals(afterFloor.westWall));
+        check("overlay untouched", afterFloor.overlays.contains("ed_4"));
+        check("object untouched", afterFloor.objects.contains("ed_3"));
+        check("room id preserved", afterFloor.roomId == 3);
+
+        ed.removeWall(4, 4, 0, TileIndex.Edge.NORTH);
+        Square afterWall = ed.square(4, 4, 0);
+        check("north wall removed", afterWall.northWall == null);
+        check("west wall survives north removal", "ed_2".equals(afterWall.westWall));
+        check("floor survives wall removal", "ed_5".equals(afterWall.floor));
+        check("object survives wall removal", afterWall.objects.contains("ed_3"));
+
+        ed.clearObjects(4, 4, 0);
+        Square afterClear = ed.square(4, 4, 0);
+        check("objects cleared", afterClear.objects.isEmpty());
+        check("floor kept by clearObjects", "ed_5".equals(afterClear.floor));
+        check("wall kept by clearObjects", "ed_2".equals(afterClear.westWall));
+    }
+
+    static void testEditorUndo(Path dir) throws Exception {
+        System.out.println("\n[CellEditor: undo and redo]");
+        Path d = Files.createDirectories(dir.resolve("edit2"));
+        writeSmallCell(d, "0_0");
+        CellData c = CellData.load(d.resolve("world_0_0.lotpack"), d.resolve("0_0.lotheader"));
+        TileIndex ti = editorTiles(d);
+        CellEditor ed = new CellEditor(c, ti);
+
+        c.setSquare(2, 2, 0, new int[]{c.tileIndex("ed_0")}, 1);
+        int[] original = c.tilesAt(2, 2, 0).clone();
+
+        ed.setFloor(2, 2, 0, "ed_5");
+        check("edit applied", "ed_5".equals(ed.square(2, 2, 0).floor));
+        check("undo available", ed.canUndo());
+
+        ed.undo();
+        check("undo restores tiles",
+                java.util.Arrays.equals(original, c.tilesAt(2, 2, 0)));
+        check("redo available", ed.canRedo());
+
+        ed.redo();
+        check("redo reapplies", "ed_5".equals(ed.square(2, 2, 0).floor));
+
+        // A rectangle fill must undo as ONE step, not 25.
+        CellData snapshot = CellData.load(d.resolve("world_0_0.lotpack"),
+                d.resolve("0_0.lotheader"));
+        CellEditor ed2 = new CellEditor(snapshot, ti);
+        int depthBefore = ed2.undoDepth();
+        CellEditor.Edit fill = ed2.fillFloor(1, 1, 5, 5, 0, "ed_5");
+        check("fill touched 25 squares", fill.squaresTouched() == 25);
+        check("fill is one undo step", ed2.undoDepth() == depthBefore + 1);
+
+        CellData pristine = CellData.load(d.resolve("world_0_0.lotpack"),
+                d.resolve("0_0.lotheader"));
+        ed2.undo();
+        check("one undo reverts the whole fill",
+                CellData.diff(pristine, snapshot).isEmpty());
+    }
+
+    static void testEditorSurvivesRoundTrip(Path dir) throws Exception {
+        System.out.println("\n[CellEditor: edits survive write and reload]");
+        Path d = Files.createDirectories(dir.resolve("edit3"));
+        writeSmallCell(d, "0_0");
+        CellData c = CellData.load(d.resolve("world_0_0.lotpack"), d.resolve("0_0.lotheader"));
+        TileIndex ti = editorTiles(d);
+        CellEditor ed = new CellEditor(c, ti);
+
+        c.setSquare(6, 6, 0, new int[]{c.tileIndex("ed_0"), c.tileIndex("ed_3")}, 2);
+        ed.setWall(6, 6, 0, TileIndex.Edge.NORTH, "ed_1");
+        ed.setWall(6, 6, 0, TileIndex.Edge.WEST, "ed_2");
+
+        Square s = ed.square(6, 6, 0);
+        check("both walls placed independently",
+                "ed_1".equals(s.northWall) && "ed_2".equals(s.westWall));
+        check("pre-existing object kept", s.objects.contains("ed_3"));
+
+        Files.write(d.resolve("w.lotpack"), c.writeLotPack());
+        Files.write(d.resolve("w.lotheader"), c.writeLotHeader());
+        CellData reread = CellData.load(d.resolve("w.lotpack"), d.resolve("w.lotheader"));
+        check("no diff after write and reload", CellData.diff(c, reread).isEmpty());
+        Square s2 = Square.at(reread, ti, 6, 6, 0);
+        check("walls still resolve after reload",
+                "ed_1".equals(s2.northWall) && "ed_2".equals(s2.westWall));
+
+        // Doorway plus its leaf: removing the wall takes the leaf with it.
+        c.setSquare(7, 7, 0, new int[]{c.tileIndex("ed_6"), c.tileIndex("ed_7")}, -1);
+        Square door = ed.square(7, 7, 0);
+        check("doorway wall detected", door.northIsDoorway);
+        check("door leaf is a fixture", door.fixtures.contains("ed_7"));
+        ed.removeWall(7, 7, 0, TileIndex.Edge.NORTH);
+        Square gone = ed.square(7, 7, 0);
+        check("removing the wall removes its door leaf too",
+                gone.northWall == null && gone.fixtures.isEmpty());
     }
 
     static void i32(ByteArrayOutputStream o, int v) {
