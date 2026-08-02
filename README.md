@@ -181,6 +181,33 @@ Probe tileall   <media dir>                 parse every binary .tiles
 Probe mapdir    <media/maps/MapName>        folder inventory
 ```
 
+## A bug byte-comparison could not catch
+
+The chunk offset table is **column-major** (`index = cx * chunksPerSide + cy`).
+It was first implemented row-major, which transposed every coordinate in every
+cell — the map was mirrored about its diagonal.
+
+Round-tripping did not catch this. Read and write shared the same wrong formula,
+so all 4065 cells reproduced byte for byte while every tile sat in the wrong
+place. Nor did parsing: the data was internally consistent.
+
+It surfaced only against an independent source. Room rectangles live in the
+lotheader, not the lotpack, so they are unaffected by chunk indexing — and rooms
+are indoors by definition. Checking every room rectangle against the tiles
+beneath it:
+
+```
+as (x,y):   85 / 1563 room squares on an interior floor   ( 5.4%)
+as (y,x):  478 / 1563 room squares on an interior floor   (30.6%)
+```
+
+The lesson worth keeping: byte-identical round-tripping proves a format was read
+and written faithfully. It says nothing about whether it was *interpreted*
+correctly. Those need separate evidence — ideally from a part of the format that
+does not share the suspect code path.
+
+`Probe locate <mapdir> <worldX> <worldY>` runs this check on demand.
+
 ## Method
 
 Every layout claim here is falsifiable and was tested that way. Parsers throw

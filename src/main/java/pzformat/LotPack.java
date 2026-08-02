@@ -94,8 +94,21 @@ public final class LotPack {
      * length and a fixed z-loop overruns into the next chunk. Squares are filled
      * in z, x, y order until the body's byte range is exhausted.
      */
+    /**
+     * Chunk offset table index. COLUMN-MAJOR: cx varies slowest.
+     *
+     * This was originally row-major, which transposed every coordinate in the
+     * cell. Byte round-tripping did not catch it — read and write shared the
+     * same wrong formula, so files matched perfectly while the map was mirrored
+     * about its diagonal. Found by checking lotheader room rectangles against
+     * the tiles beneath them: rooms are indoors, and under the wrong
+     * orientation only 5.4% of room squares sat on an interior floor versus
+     * 30.6% under the right one.
+     */
+    public int chunkIndex(int cx, int cy) { return cx * chunksPerSide + cy; }
+
     public Chunk chunk(int cx, int cy) {
-        int idx = cy * chunksPerSide + cx;
+        int idx = chunkIndex(cx, cy);
         int start = (int) offsets[idx], end = chunkEnd(idx);
         LE r = new LE(data);
         r.seek(start);
@@ -211,8 +224,7 @@ public final class LotPack {
         byte[][] bodies = new byte[chunkCount][];
         for (int cy = 0; cy < chunksPerSide; cy++)
             for (int cx = 0; cx < chunksPerSide; cx++) {
-                int idx = cy * chunksPerSide + cx;
-                bodies[idx] = encodeChunk(chunk(cx, cy), p);
+                bodies[chunkIndex(cx, cy)] = encodeChunk(chunk(cx, cy), p);
             }
         int headerSize = 12 + chunkCount * 8;
         LEW w = new LEW();

@@ -94,7 +94,10 @@ public final class RoundTrip {
                 cells++;
 
                 for (int ci = 0; ci < lp.chunkCount; ci++) {
-                    int cx = ci % lp.chunksPerSide, cy = ci / lp.chunksPerSide;
+                    // Offset table is COLUMN-major: index = cx * chunksPerSide + cy.
+                    // Decomposing it row-major here compared each chunk's bytes
+                    // against a different chunk's encoding.
+                    int cx = ci / lp.chunksPerSide, cy = ci % lp.chunksPerSide;
                     LotPack.Chunk c = lp.chunk(cx, cy);
                     byte[] raw = lp.rawChunk(ci);
                     chunksTotal++;

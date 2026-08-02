@@ -25,6 +25,22 @@ public final class Probe {
             case "survey"    -> Survey.run(Path.of(args[1]));
             case "roundtrip" -> RoundTrip.run(Path.of(args[1]),
                                     args.length > 2 ? Integer.parseInt(args[2]) : 0);
+            case "spawnmark" -> SpawnMark.run(Path.of(args[1]), Path.of(args[2]),
+                                    Path.of(args[3]),
+                                    args.length > 4 ? Integer.parseInt(args[4]) : 12);
+            case "locate"    -> Locate.run(Path.of(args[1]),
+                                    Integer.parseInt(args[2]), Integer.parseInt(args[3]));
+            case "testmodat" -> MakeTestMod.runAtWorld(
+                                    Path.of(args[1]), Path.of(args[2]), Path.of(args[3]),
+                                    args[4], Integer.parseInt(args[5]),
+                                    Integer.parseInt(args[6]),
+                                    args.length > 7 ? Integer.parseInt(args[7]) : 12);
+            case "testmod"   -> MakeTestMod.run(
+                                    Path.of(args[1]), args[2], Path.of(args[3]),
+                                    args.length > 4 ? args[4] : "PZFormatTest",
+                                    args.length > 7 ? Integer.parseInt(args[5]) : 120,
+                                    args.length > 7 ? Integer.parseInt(args[6]) : 120,
+                                    args.length > 7 ? Integer.parseInt(args[7]) : 16);
             case "tilesolve" -> TileBin.solve(Path.of(args[1]),
                                     args.length > 2 ? Path.of(args[2]) : null);
             case "tileall"   -> TileBin.solveAll(Path.of(args[1]));
@@ -51,6 +67,11 @@ public final class Probe {
               tilebin   <file.tiles> [file.tiles.txt]   analyse binary tile definitions
               tilesolve <file.tiles> [file.tiles.txt]   solve + verify one binary file
               tileall   <media dir>                     parse every binary .tiles
+              testmod   <mapdir> <X_Y> <modsdir> [name] [x y size]
+              locate    <mapdir> <worldX> <worldY>       what is at this world coordinate?
+              spawnmark <mapdir> <mediadir> <outdir> [size]  paint every spawn point
+              testmodat <mapdir> <mediadir> <modsdir> <name> <worldX> <worldY> [size]
+                                                        edit at a world coordinate
               mapdir    <media/maps/MapName>            summarise a whole map folder
 
             Typical starting point:

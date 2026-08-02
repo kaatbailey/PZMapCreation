@@ -31,6 +31,9 @@ public class SelfTest {
         testWriterCatchesDroppedField(tmp);
         testLotPackWriterRoundTrip(tmp);
         testTileBin(tmp);
+        testCellData(tmp);
+        testCellEditIsSurgical(tmp);
+        testChunkOrientation(tmp);
         System.out.println(failures == 0 ? "\nALL TESTS PASSED" : "\n" + failures + " FAILURE(S)");
         System.exit(failures == 0 ? 0 : 1);
     }
@@ -449,6 +452,204 @@ public class SelfTest {
         try { TileBin.read(dir.resolve("t3.tiles"), TileBin.TileShape.COUNT_ONLY, 0); }
         catch (LE.ParseException e) { badMagic = true; }
         check("bad magic rejected", badMagic);
+    }
+
+    /** Build a small but structurally valid cell: 4x4 chunks, 3 levels. */
+    static void writeSmallCell(Path dir, String cell) throws Exception {
+        int chunksPerSide = 4, chunkCount = chunksPerSide * chunksPerSide;
+        int levels = 3;   // minLevel -1 .. maxLevel 1
+        int cs = LotPack.CHUNK_SIZE;
+        int squares = levels * cs * cs;
+
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        // square 0: room 7, tiles {0,1};  square 1: room -1, tile {2}; rest empty
+        i32(body, 3); i32(body, 7); i32(body, 0); i32(body, 1);
+        i32(body, 2); i32(body, -1); i32(body, 2);
+        i32(body, -1); i32(body, squares - 2);
+        byte[] one = body.toByteArray();
+
+        int headerSize = 12 + chunkCount * 8;
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        o.writeBytes("LOTP".getBytes(StandardCharsets.ISO_8859_1));
+        i32(o, 1); i32(o, chunkCount);
+        for (int i = 0; i < chunkCount; i++) i64(o, headerSize + (long) i * one.length);
+        for (int i = 0; i < chunkCount; i++) o.writeBytes(one);
+        Files.write(dir.resolve("world_" + cell + ".lotpack"), o.toByteArray());
+
+        // Header with minLevel -1, maxLevel 1 -> levelCount 3
+        ByteArrayOutputStream h = new ByteArrayOutputStream();
+        h.writeBytes("LOTH".getBytes(StandardCharsets.ISO_8859_1));
+        i32(h, 1);
+        i32(h, 3);
+        nl(h, "floor_a"); nl(h, "wall_b"); nl(h, "grass_c");
+        i32(h, 8); i32(h, 8); i32(h, -1); i32(h, 1);
+        i32(h, 1);
+        nl(h, "kitchen"); i32(h, 0); i32(h, 1); i32(h, 2); i32(h, 3); i32(h, 4); i32(h, 5);
+        i32(h, 0);
+        i32(h, 1); i32(h, 1); i32(h, 0);
+        for (int i = 0; i < LotHeader.GRID_BYTES; i++) h.write(0);
+        Files.write(dir.resolve(cell + ".lotheader"), h.toByteArray());
+    }
+
+    static void testCellData(Path dir) throws Exception {
+        System.out.println("\n[CellData: load, edit, write, reload]");
+        Path d = Files.createDirectories(dir.resolve("cell"));
+        writeSmallCell(d, "5_9");
+        Path lp = d.resolve("world_5_9.lotpack"), lh = d.resolve("5_9.lotheader");
+
+        CellData c = CellData.load(lp, lh);
+        check("cell size 32", c.cellSize == 32);
+        check("3 levels", c.levelCount == 3);
+        check("minLevel -1", c.minLevel == -1);
+        check("z index maps actual to array", c.zIndex(-1) == 0 && c.zIndex(0) == 1);
+
+        // Data lives at array index 0, i.e. actual z = -1.
+        check("square (0,0,z-1) tiles", java.util.Arrays.equals(
+                c.tilesAt(0, 0, -1), new int[]{0, 1}));
+        check("square (0,0,z-1) room", c.roomAt(0, 0, -1) == 7);
+        check("tile names resolve", java.util.Arrays.equals(
+                c.tileNamesAt(0, 0, -1), new String[]{"floor_a", "wall_b"}));
+        check("empty square is null", c.tilesAt(4, 4, -1) == null);
+
+        long before = c.nonEmptySquares();
+
+        // Write and reload with no edit: must be identical.
+        Path lp2 = d.resolve("rt.lotpack"), lh2 = d.resolve("rt.lotheader");
+        Files.write(lp2, c.writeLotPack());
+        Files.write(lh2, c.writeLotHeader());
+        check("lotpack round trips byte-identical",
+                java.util.Arrays.equals(Files.readAllBytes(lp), Files.readAllBytes(lp2)));
+        check("lotheader round trips byte-identical",
+                java.util.Arrays.equals(Files.readAllBytes(lh), Files.readAllBytes(lh2)));
+
+        CellData c2 = CellData.load(lp2, lh2);
+        check("reload has no diff", CellData.diff(c, c2).isEmpty());
+        check("square count preserved", c2.nonEmptySquares() == before);
+    }
+
+    static void testCellEditIsSurgical(Path dir) throws Exception {
+        System.out.println("\n[CellData: edits touch only the intended squares]");
+        Path d = Files.createDirectories(dir.resolve("cell2"));
+        writeSmallCell(d, "1_1");
+        Path lp = d.resolve("world_1_1.lotpack"), lh = d.resolve("1_1.lotheader");
+
+        CellData before = CellData.load(lp, lh);
+        CellData after = CellData.load(lp, lh);
+
+        int changed = after.fill("marker_tile", 10, 10, 4, 4, 0);
+        check("fill reports 16 squares", changed == 16);
+        check("new tile name appended", after.header.tileNames.contains("marker_tile"));
+        check("existing tile indices unshifted",
+                after.header.tileNames.indexOf("floor_a") == 0);
+
+        CellData.Diff diff = CellData.diff(before, after);
+        check("diff sees exactly the filled squares",
+                diff.squaresChanged + diff.squaresAdded == 16);
+        check("nothing removed", diff.squaresRemoved == 0);
+
+        // A square just outside the rectangle must be untouched.
+        check("square outside rect unchanged",
+                java.util.Arrays.equals(before.tilesAt(9, 10, 0), after.tilesAt(9, 10, 0)));
+        // A different level must be untouched.
+        check("other level unchanged", java.util.Arrays.equals(
+                before.tilesAt(0, 0, -1), after.tilesAt(0, 0, -1)));
+
+        // Survives serialisation.
+        Path lp2 = d.resolve("e.lotpack"), lh2 = d.resolve("e.lotheader");
+        Files.write(lp2, after.writeLotPack());
+        Files.write(lh2, after.writeLotHeader());
+        CellData reread = CellData.load(lp2, lh2);
+        check("edit survives write+reload", CellData.diff(after, reread).isEmpty());
+        check("marker present after reload", java.util.Arrays.equals(
+                reread.tileNamesAt(10, 10, 0), new String[]{"marker_tile"}));
+
+        CellData.Diff vsOriginal = CellData.diff(before, reread);
+        check("vs original: only the 16 squares",
+                vsOriginal.squaresChanged + vsOriginal.squaresAdded == 16
+                        && vsOriginal.squaresRemoved == 0);
+    }
+
+    /**
+     * Regression test for the x/y transposition.
+     *
+     * The earlier fixtures made every chunk identical, so a transposed chunk
+     * index was invisible — that is exactly why the bug survived to the point
+     * of loading the game. This builds a cell where one specific chunk differs
+     * and asserts the data lands at the correct global coordinate.
+     */
+    static void testChunkOrientation(Path dir) throws Exception {
+        System.out.println("\n[.lotpack: chunk index is column-major, not transposed]");
+        int chunksPerSide = 4, chunkCount = chunksPerSide * chunksPerSide;
+        int levels = 1, cs = LotPack.CHUNK_SIZE;
+        int squares = levels * cs * cs;
+
+        // Marker goes in chunk (cx=2, cy=0) -> global (16,0).
+        // If the index is transposed it lands in chunk (0,2) -> global (0,16).
+        int markCx = 2, markCy = 0;
+
+        ByteArrayOutputStream empty = new ByteArrayOutputStream();
+        i32(empty, -1); i32(empty, squares);
+        byte[] emptyBody = empty.toByteArray();
+
+        ByteArrayOutputStream marked = new ByteArrayOutputStream();
+        i32(marked, 2); i32(marked, 99); i32(marked, 1);      // square 0: room 99, tile 1
+        i32(marked, -1); i32(marked, squares - 1);
+        byte[] markedBody = marked.toByteArray();
+
+        int headerSize = 12 + chunkCount * 8;
+        byte[][] bodies = new byte[chunkCount][];
+        for (int i = 0; i < chunkCount; i++) bodies[i] = emptyBody;
+        bodies[markCx * chunksPerSide + markCy] = markedBody;   // column-major
+
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        o.writeBytes("LOTP".getBytes(StandardCharsets.ISO_8859_1));
+        i32(o, 1); i32(o, chunkCount);
+        long off = headerSize;
+        for (byte[] b : bodies) { i64(o, off); off += b.length; }
+        for (byte[] b : bodies) o.writeBytes(b);
+
+        Path d = Files.createDirectories(dir.resolve("orient"));
+        Files.write(d.resolve("world_0_0.lotpack"), o.toByteArray());
+
+        ByteArrayOutputStream h = new ByteArrayOutputStream();
+        h.writeBytes("LOTH".getBytes(StandardCharsets.ISO_8859_1));
+        i32(h, 1); i32(h, 2);
+        nl(h, "grass_0"); nl(h, "marker_1");
+        i32(h, 8); i32(h, 8); i32(h, 0); i32(h, 0);   // minLevel 0, maxLevel 0
+        i32(h, 0); i32(h, 0);
+        for (int i = 0; i < LotHeader.GRID_BYTES; i++) h.write(0);
+        Files.write(d.resolve("0_0.lotheader"), h.toByteArray());
+
+        CellData c = CellData.load(d.resolve("world_0_0.lotpack"), d.resolve("0_0.lotheader"));
+
+        int gx = markCx * cs, gy = markCy * cs;      // (16, 0)
+        check("marker at global (" + gx + "," + gy + ")", c.tilesAt(gx, gy, 0) != null);
+        check("marker room id", c.roomAt(gx, gy, 0) == 99);
+        check("NOT at the transposed position (" + gy + "," + gx + ")",
+                c.tilesAt(gy, gx, 0) == null);
+
+        // And it must survive a write/reload at the same place.
+        Files.write(d.resolve("rt.lotpack"), c.writeLotPack());
+        Files.write(d.resolve("rt.lotheader"), c.writeLotHeader());
+        CellData c2 = CellData.load(d.resolve("rt.lotpack"), d.resolve("rt.lotheader"));
+        check("marker still at (" + gx + "," + gy + ") after round trip",
+                c2.tilesAt(gx, gy, 0) != null && c2.tilesAt(gy, gx, 0) == null);
+        check("bytes unchanged by round trip", java.util.Arrays.equals(
+                Files.readAllBytes(d.resolve("world_0_0.lotpack")),
+                Files.readAllBytes(d.resolve("rt.lotpack"))));
+
+        // chunkIndex and its inverse must agree, or per-chunk comparisons line
+        // up chunk A's bytes against chunk B's encoding (which happened once).
+        LotPack lp = LotPack.read(d.resolve("world_0_0.lotpack"),
+                LotHeader.read(d.resolve("0_0.lotheader")));
+        boolean consistent = true;
+        for (int ci = 0; ci < lp.chunkCount; ci++) {
+            int cx = ci / lp.chunksPerSide, cy = ci % lp.chunksPerSide;
+            if (lp.chunkIndex(cx, cy) != ci) consistent = false;
+        }
+        check("chunkIndex round trips with its inverse", consistent);
+        check("marked chunk found by linear index",
+                lp.chunkIndex(markCx, markCy) == markCx * chunksPerSide + markCy);
     }
 
     static void i32(ByteArrayOutputStream o, int v) {
