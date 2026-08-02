@@ -12,6 +12,7 @@ No dependencies. Java 17+.
 | `.pack` | both PZPK and legacy layouts; round-trips byte-identical |
 | `.tiles` binary | 73,644 tiles; all 37,060 with a text sibling match 100% |
 | `.tiles` text | 33,568 tiles, 216 property keys |
+| `chunkdata` | shape confirmed on 4065 cells; block trigger unsolved |
 
 ```bash
 javac -d out $(find src -name '*.java')
@@ -225,6 +226,91 @@ in the atlas but carry no properties.
 Useful keys for an editor: `wall`, `WallOverlay`, `Facing`, `attachedN`,
 `attachedW`, `DoorWallN`, `DoorWallW`, `WindowShape`, `container`,
 `ContainerCapacity`, `solid`, `solidtrans`, `BlocksPlacement`, `attachedFloor`.
+
+### `chunkdata_X_Y.bin` — PARTIAL
+
+Terrain/biome data per cell. **Not yet solved.** Relevant because generated
+maps that omit it get paved over by B42's procedural WorldGen — authored roads
+and buildings vanish under generated terrain.
+
+Confirmed across all 4065 vanilla cells:
+
+```
+int16       version         always 00 01
+byte[1024]  per-chunk value, 32x32 chunks
+byte[64] x N                detail blocks
+```
+
+Every file fits `2 + 1024 + N*64` exactly — 4065 / 4065. 2749 cells have N=0
+(uniform terrain, no detail). Observed values: 0, 1, 2, 3, 4, 5, 8, 16, 17, 18,
+20, 32.
+
+**Open: what triggers a detail block.** Value 2 looked like the marker — the
+four single-block files each had exactly one chunk valued 2, and one carried a
+block whose bytes were the other grid values in that cell. But it holds in only
+2834 / 4065 files, and value 2 appears 255,884 times *inside* blocks.
+
+That points at a RECURSIVE structure: 2 means "subdivide", at any level. A chunk
+valued 2 gets a 64-byte block of per-tile values; a tile valued 2 inside a block
+gets a further block; blocks are consumed in order. Untested — the check is to
+walk the grid breadth-first queueing a block per 2, then walk each block the
+same way, and require the consumed count to equal N in every file.
+
+Also unknown: which value means "authored, do not generate". Comparing a dense
+town cell against empty wilderness should show it.
+
+`Probe chunkdata <mapdir>` runs the analysis.
+
+## GIS import
+
+Generates PZ maps from public-domain GIS data.
+
+- **Buildings** — USA Structures (FEMA / Oak Ridge / USGS), public domain, with
+  occupancy classes (Residential, Agriculture, Restaurant, ...).
+- **Roads** — Census TIGER/Line, public domain. Layer 8 is local roads.
+
+Scale is 1 tile = 1 metre, which matches vanilla building proportions.
+
+Buildings are rasterised as polygons, not bounding boxes: tiles are tested for
+containment, then walls derived from the boundary using the edge convention
+verified against vanilla rooms.
+
+**Clip the extent to the region you asked for.** Feature services return whole
+features intersecting a bounding box, so a road may run kilometres past it.
+Deriving the extent from returned data inflates the canvas and squashes the
+buildings into a cluster against the roads.
+
+### Mod structure for B42
+
+Matched against a working B42 map mod after ours loaded but never registered:
+
+```
+<mod>/42/mod.info                  version metadata only, needs versionMin
+<mod>/common/media/maps/<Name>/    the actual content
+```
+
+- `mod.info` goes ONLY in the version folder, and the folder is `42`, not `42.0`
+- spawnpoints use `worldX`/`worldY` (cell coords) plus cell-local `posX`/`posY`.
+  Vanilla maps use absolute world coordinates; mod maps do not, and a
+  spawnpoints file the game cannot use makes it skip the map silently
+- no `spawnregions.lua` — that is a multiplayer server config, not a
+  single-player registration hook
+- `map.info` needs `lots=Muldraugh, KY`
+
+### WorldGen
+
+Without a `WorldGenOverride.lua` the game generates terrain over anything a map
+does not describe. Declaring `grass_plain` over the generated range replaces
+forest with grass, bushes at 1% and each tree type at ~0.1%.
+
+`worldgen.biomes` comes from `biomes/worldgen/`: grass_plain, flower_plain,
+sand_bank, water, and six forest types. NOT `biomes_map` (dirt, townhouse),
+which overrides do not read.
+
+**Still unresolved:** the override changes what generates, but does not stop
+generation covering authored tiles. Buildings render correctly in our own
+renderer but are not visible in game. `chunkdata_X_Y.bin` is the likely
+mechanism — see above.
 
 ## Commands
 
