@@ -25,6 +25,7 @@ public final class Probe {
             case "survey"    -> Survey.run(Path.of(args[1]));
             case "roundtrip" -> RoundTrip.run(Path.of(args[1]),
                                     args.length > 2 ? Integer.parseInt(args[2]) : 0);
+            case "roomgeom"  -> RoomGeometry.run(Path.of(args[1]), Path.of(args[2]), args[3]);
             case "editdemo"  -> EditDemo.run(Path.of(args[1]), Path.of(args[2]),
                                     args[3], Integer.parseInt(args[4]),
                                     Integer.parseInt(args[5]), Integer.parseInt(args[6]),
@@ -98,6 +99,7 @@ public final class Probe {
               props     <mediadir> [mapdir] [X_Y]        tile semantics + validation
               square    <mediadir> <mapdir> <X_Y> <x> <y> <z>   dump every tile + properties
               findprop  <mediadir> <mapdir> <X_Y> <prop>  find + dump squares having a property
+              roomgeom  <mediadir> <mapdir> <X_Y>         where do room walls actually sit?
               editdemo  <mediadir> <mapdir> <X_Y> <x> <y> <size> [outdir]
                                                         layer-aware edit vs destructive fill
               testmodat <mapdir> <mediadir> <modsdir> <name> <worldX> <worldY> [size]
