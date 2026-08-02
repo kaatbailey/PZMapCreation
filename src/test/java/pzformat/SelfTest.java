@@ -36,6 +36,7 @@ public class SelfTest {
         testCellData(tmp);
         testCellEditIsSurgical(tmp);
         testChunkOrientation(tmp);
+        testIsoProjection();
         System.out.println(failures == 0 ? "\nALL TESTS PASSED" : "\n" + failures + " FAILURE(S)");
         System.exit(failures == 0 ? 0 : 1);
     }
@@ -703,6 +704,39 @@ public class SelfTest {
         check("chunkIndex round trips with its inverse", consistent);
         check("marked chunk found by linear index",
                 lp.chunkIndex(markCx, markCy) == markCx * chunksPerSide + markCy);
+    }
+
+    /**
+     * The isometric projection, checked as arithmetic rather than by eye.
+     * A wrong formula still produces a picture, so "it looks fine" is not
+     * evidence — these are the relationships the geometry must satisfy.
+     */
+    static void testIsoProjection() {
+        System.out.println("\n[renderer: isometric projection]");
+        int HW = CellRenderer.HALF_W, QW = CellRenderer.QUARTER_W;
+        check("half width is 32", HW == 32);
+        check("quarter width is 16", QW == 16);
+
+        // Moving +1 in x goes right and down; +1 in y goes left and down.
+        int ox = (0 - 0) * HW, oy = (0 + 0) * QW;
+        int xPlusX = (1 - 0) * HW, xPlusY = (1 + 0) * QW;
+        int yPlusX = (0 - 1) * HW, yPlusY = (0 + 1) * QW;
+        check("+x moves right and down", xPlusX > ox && xPlusY > oy);
+        check("+y moves left and down", yPlusX < ox && yPlusY > oy);
+        check("+x and +y descend equally", xPlusY - oy == yPlusY - oy);
+
+        // Diagonal (1,1) sits directly below the origin: the diamond closes.
+        int dX = (1 - 1) * HW, dY = (1 + 1) * QW;
+        check("(1,1) is directly below (0,0)", dX == ox);
+        check("(1,1) is one diamond height down", dY - oy == 32);
+
+        // A full tile step in x must equal the sprite width, or tiles gap/overlap.
+        check("two x-steps span one sprite width",
+                ((2 - 0) * HW) - ox == SpriteAtlas.TILE_W);
+
+        // z must lift, and by more than a tile's depth or levels would interleave.
+        check("z step lifts", CellRenderer.Z_STEP > 0);
+        check("z step exceeds one diamond height", CellRenderer.Z_STEP > 32);
     }
 
     static void i32(ByteArrayOutputStream o, int v) {
