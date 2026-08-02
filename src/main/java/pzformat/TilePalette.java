@@ -25,7 +25,16 @@ public final class TilePalette {
                 "floors_interior_tilesandwood_01_", "floors_interior_carpet_01_", "floors_");
         p.floorRoad = first(ti, n -> ti.kindOf(n) == TileIndex.Kind.FLOOR && !ti.isOverlay(n),
                 "blends_street_01_", "floors_exterior_street_01_", "blends_");
-        p.floorGrass = first(ti, n -> ti.kindOf(n) == TileIndex.Kind.FLOOR && !ti.isOverlay(n),
+        // The worldgen biomes explicitly exclude blends_natural_01_0/5/6/7 and
+        // 64/69/70/71 from placement — picking the first name alphabetically
+        // landed on 01_0, which renders as bare dirt rather than grass.
+        Set<String> excluded = Set.of(
+                "blends_natural_01_0", "blends_natural_01_5",
+                "blends_natural_01_6", "blends_natural_01_7",
+                "blends_natural_01_64", "blends_natural_01_69",
+                "blends_natural_01_70", "blends_natural_01_71");
+        p.floorGrass = first(ti, n -> ti.kindOf(n) == TileIndex.Kind.FLOOR
+                        && !ti.isOverlay(n) && !excluded.contains(n),
                 "blends_natural_01_", "blends_grassoverlays_01_", "blends_");
 
         p.wallNorth = first(ti, n -> has(ti, n, "WallN") && !ti.isOverlay(n)

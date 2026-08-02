@@ -125,6 +125,7 @@ public final class GisCells {
 
         writeModInfo(modsDir.resolve(modName), modName);
         writeSupportFiles(mapDir, modName, spawns);
+        writeWorldGenOverride(mapDir, cellsX, cellsY);
 
         System.out.println("\nmod written to " + modsDir.resolve(modName));
         System.out.println("cells occupy " + ORIGIN_CELL_X + "_" + ORIGIN_CELL_Y
@@ -210,6 +211,41 @@ public final class GisCells {
         Files.writeString(mapDir.resolve("spawnpoints.lua"), sb.toString());
         Files.writeString(mapDir.resolve("objects.lua"),
                 "objects = {}\nreturn objects\n");
+    }
+
+    /**
+     * Tell WorldGen what this land is.
+     *
+     * Without an override B42 generates terrain procedurally over any area a
+     * map does not describe, which buried the first import under forest.
+     * Vanilla ships 65 MB of explicit forest polygons; the override is the
+     * lightweight alternative.
+     *
+     * `worldgen.biomes` is populated from biomes/worldgen/ — grass_plain,
+     * flower_plain, sand_bank, water, and six forest types. NOT the same table
+     * as biomes_map (dirt, townhouse), which the override does not read.
+     *
+     * grass_plain gives grass with bushes at 1% and each tree type at roughly
+     * 0.1%: scattered cover rather than woodland.
+     *
+     * Unverified: whether this SUPPRESSES generation over our roads and
+     * buildings or merely changes what gets generated. If scattered growth
+     * still appears on top of the import, the per-chunk chunkdata_*.bin route
+     * is the next thing to try.
+     */
+    static void writeWorldGenOverride(Path mapDir, int cellsX, int cellsY) throws Exception {
+        int xmin = ORIGIN_CELL_X * 256, ymin = ORIGIN_CELL_Y * 256;
+        int xmax = xmin + cellsX * 256 - 1, ymax = ymin + cellsY * 256 - 1;
+        String lua = "worldgen[\"static_modules\"] = {\n"
+                + "    {\n"
+                + "        position = { xmin = " + xmin + ", xmax = " + xmax
+                + ", ymin = " + ymin + ", ymax = " + ymax + " },\n"
+                + "        biome = worldgen.biomes.grass_plain\n"
+                + "    }\n"
+                + "}\n";
+        Files.writeString(mapDir.resolve("WorldGenOverride.lua"), lua);
+        System.out.println("worldgen override: grass_plain over world x " + xmin + ".."
+                + xmax + ", y " + ymin + ".." + ymax);
     }
 
     static void writeModInfo(Path modRoot, String modName) throws Exception {
