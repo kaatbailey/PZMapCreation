@@ -51,13 +51,26 @@ public final class GisImport {
      */
     public static void run(Path buildingsFile, Path roadsFile, Path areaFile,
                            Path outDir, int maxTiles) throws Exception {
+        GisImport g = rasterise(buildingsFile, roadsFile, areaFile, maxTiles);
+        if (g == null) return;
+        Files.createDirectories(outDir);
+        Path png = outDir.resolve("import_schematic.png");
+        g.writeSchematic(png);
+        System.out.println("\nschematic written to " + png);
+        System.out.println("Open it next to the real map. Building shapes and road"
+                + " layout should be recognisable.");
+    }
+
+    /** Project and rasterise, without writing anything. */
+    public static GisImport rasterise(Path buildingsFile, Path roadsFile, Path areaFile,
+                                      int maxTiles) throws Exception {
         GeoJson buildings = GeoJson.read(buildingsFile);
         GeoJson roads = Files.exists(roadsFile) ? GeoJson.read(roadsFile) : new GeoJson();
         System.out.println("features: " + buildings.features.size() + " buildings, "
                 + roads.features.size() + " roads");
         if (buildings.features.isEmpty() && roads.features.isEmpty()) {
             System.out.println("nothing to import");
-            return;
+            return null;
         }
 
         double minLon, minLat, maxLon, maxLat;
@@ -156,12 +169,7 @@ public final class GisImport {
         System.out.println("\nby occupancy class:");
         g.byOccupancy.forEach((k, v) -> System.out.printf("   %-24s %d%n", k, v));
 
-        Files.createDirectories(outDir);
-        Path png = outDir.resolve("import_schematic.png");
-        g.writeSchematic(png);
-        System.out.println("\nschematic written to " + png);
-        System.out.println("Open it next to the real map. Building shapes and road"
-                + " layout should be recognisable.");
+        return g;
     }
 
     static double[] extentOf(List<GeoJson.Feature> feats) {

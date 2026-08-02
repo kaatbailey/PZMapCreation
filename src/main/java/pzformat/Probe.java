@@ -25,6 +25,10 @@ public final class Probe {
             case "survey"    -> Survey.run(Path.of(args[1]));
             case "roundtrip" -> RoundTrip.run(Path.of(args[1]),
                                     args.length > 2 ? Integer.parseInt(args[2]) : 0);
+            case "giscells"  -> GisCells.run(Path.of(args[1]), Path.of(args[2]),
+                                    Path.of(args[3]), Path.of(args[4]), Path.of(args[5]),
+                                    args.length > 6 ? args[6] : "PZGisImport",
+                                    args.length > 7 ? Integer.parseInt(args[7]) : 2048);
             case "gisimport" -> GisImport.run(Path.of(args[1]), Path.of(args[2]),
                                     args.length > 4 ? Path.of(args[3]) : null,
                                     Path.of(args.length > 4 ? args[4] : args[3]),
@@ -104,6 +108,8 @@ public final class Probe {
               square    <mediadir> <mapdir> <X_Y> <x> <y> <z>   dump every tile + properties
               findprop  <mediadir> <mapdir> <X_Y> <prop>  find + dump squares having a property
               gisimport <buildings.geojson> <roads.geojson> [area.geojson] <outdir> [maxTiles]
+              giscells  <buildings> <roads> <area> <mediadir> <modsdir> [name] [maxTiles]
+                                                        GIS -> loadable PZ cells
                                                         GIS -> PZ geometry, schematic PNG
               roomgeom  <mediadir> <mapdir> <X_Y>         where do room walls actually sit?
               editdemo  <mediadir> <mapdir> <X_Y> <x> <y> <size> [outdir]

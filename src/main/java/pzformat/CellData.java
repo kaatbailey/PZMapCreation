@@ -39,6 +39,29 @@ public final class CellData {
                 Arrays.fill(rooms[z][x], -1);
     }
 
+    /**
+     * An empty cell built from nothing, for generated maps.
+     * The header must already carry its tile names and level range.
+     */
+    public static CellData blank(LotHeader h, int chunksPerSide) {
+        return new CellData(h, chunksPerSide, h.maxLevel() - h.minLevel + 1);
+    }
+
+    /** A header for a generated cell: B42 layout, no rooms or buildings yet. */
+    public static LotHeader newHeader(List<String> tileNames, int minLevel, int maxLevel) {
+        LotHeader h = new LotHeader();
+        h.b42 = true;
+        h.version = 1;
+        h.levelsAbove = 8;
+        h.levelsBelow = 8;
+        h.minLevel = minLevel;
+        h.unknown12 = maxLevel;
+        h.tileNames.addAll(tileNames);
+        h.chunkGrid = new byte[LotHeader.GRID_BYTES];
+        h.fullyConsumed = true;
+        return h;
+    }
+
     public static CellData load(Path lotpack, Path lotheader) throws IOException {
         LotHeader h = LotHeader.read(lotheader);
         LotPack lp = LotPack.read(lotpack, h);
