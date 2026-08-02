@@ -25,6 +25,14 @@ public final class Probe {
             case "survey"    -> Survey.run(Path.of(args[1]));
             case "roundtrip" -> RoundTrip.run(Path.of(args[1]),
                                     args.length > 2 ? Integer.parseInt(args[2]) : 0);
+            case "findprop"  -> PropsProbe.find(Path.of(args[1]), Path.of(args[2]),
+                                    args[3], args[4]);
+            case "square"    -> PropsProbe.dump(Path.of(args[1]), Path.of(args[2]),
+                                    args[3], Integer.parseInt(args[4]),
+                                    Integer.parseInt(args[5]), Integer.parseInt(args[6]));
+            case "props"     -> PropsProbe.run(Path.of(args[1]),
+                                    args.length > 2 ? Path.of(args[2]) : null,
+                                    args.length > 3 ? args[3] : null);
             case "render"    -> CellRenderer.run(
                                     Path.of(args[1]), Path.of(args[2]), args[3],
                                     Integer.parseInt(args[4]), Integer.parseInt(args[5]),
@@ -83,6 +91,9 @@ public final class Probe {
               sprites   <texturepacks dir> [lotheader]  do tile names resolve to sprites?
               packinfo  <file.pack | dir>               structural analysis of atlases
               render    <mapdir> <texturepacks> <X_Y> <x> <y> <size> [zFrom zTo] [out.png]
+              props     <mediadir> [mapdir] [X_Y]        tile semantics + validation
+              square    <mediadir> <mapdir> <X_Y> <x> <y> <z>   dump every tile + properties
+              findprop  <mediadir> <mapdir> <X_Y> <prop>  find + dump squares having a property
               testmodat <mapdir> <mediadir> <modsdir> <name> <worldX> <worldY> [size]
                                                         edit at a world coordinate
               mapdir    <media/maps/MapName>            summarise a whole map folder

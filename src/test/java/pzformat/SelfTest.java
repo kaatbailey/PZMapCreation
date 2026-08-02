@@ -37,6 +37,7 @@ public class SelfTest {
         testCellEditIsSurgical(tmp);
         testChunkOrientation(tmp);
         testIsoProjection();
+        testSquareStructureBeatsOverlay(tmp);
         System.out.println(failures == 0 ? "\nALL TESTS PASSED" : "\n" + failures + " FAILURE(S)");
         System.exit(failures == 0 ? 0 : 1);
     }
@@ -737,6 +738,93 @@ public class SelfTest {
         // z must lift, and by more than a tile's depth or levels would interleave.
         check("z step lifts", CellRenderer.Z_STEP > 0);
         check("z step exceeds one diamond height", CellRenderer.Z_STEP > 32);
+    }
+
+    /**
+     * Square must resolve structure, not decoration. Overlay tiles (grime,
+     * blood) carry attachedN/attachedW just like real walls, so a naive
+     * first-match classifier reports the dirt as the wall — which would make
+     * "replace this wall" replace the grime instead.
+     */
+    static void testSquareStructureBeatsOverlay(Path dir) throws Exception {
+        System.out.println("\n[Square: structure wins over overlay decoration]");
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        o.writeBytes("tdef".getBytes(StandardCharsets.ISO_8859_1));
+        i32(o, 1); i32(o, 1);
+        nl(o, "mix"); nl(o, "mix.png");
+        i32(o, 4); i32(o, 1); i32(o, 42); i32(o, 7);
+        // 0: real north wall — WallN is the structural marker
+        i32(o, 2); nl(o, "wall"); nl(o, ""); nl(o, "WallN"); nl(o, "");
+        // 1: grime hung on a wall — attachedN, not WallN
+        i32(o, 3); nl(o, "wall"); nl(o, ""); nl(o, "attachedN"); nl(o, "");
+                   nl(o, "WallOverlay"); nl(o, "");
+        // 2: real floor
+        i32(o, 1); nl(o, "attachedFloor"); nl(o, "");
+        // 3: a fridge
+        i32(o, 2); nl(o, "container"); nl(o, "fridge"); nl(o, "solid"); nl(o, "");
+        // 4: west wall containing a window opening (structure)
+        i32(o, 2); nl(o, "wall"); nl(o, ""); nl(o, "WindowW"); nl(o, "");
+        // 5: the glass pane mounted in it (fixture)
+        i32(o, 2); nl(o, "WindowShape"); nl(o, "18"); nl(o, "windowW"); nl(o, "");
+        // 6: north wall with a door frame (structure)
+        i32(o, 2); nl(o, "wall"); nl(o, ""); nl(o, "DoorWallN"); nl(o, "");
+        Path tf = dir.resolve("mix.tiles");
+        Files.write(tf, o.toByteArray());
+
+        TileBin tb = TileBin.read(tf, TileBin.TileShape.COUNT_ONLY, 0);
+        TileIndex ti = new TileIndex();
+        ti.byName.putAll(tb.byName);
+
+        check("overlay detected via WallOverlay", ti.isOverlay("mix_1"));
+        check("real wall not an overlay", !ti.isOverlay("mix_0"));
+        check("both classify as WALL",
+                ti.kindOf("mix_0") == TileIndex.Kind.WALL
+             && ti.kindOf("mix_1") == TileIndex.Kind.WALL);
+        check("both report the north side",
+                ti.edgeOf("mix_0") == TileIndex.Edge.NORTH
+             && ti.edgeOf("mix_1") == TileIndex.Edge.NORTH);
+        check("only WallN is structural",
+                ti.isStructuralWall("mix_0") && !ti.isStructuralWall("mix_1"));
+
+        // Build a square holding overlay FIRST, so order alone would pick wrong.
+        Path d = Files.createDirectories(dir.resolve("sqcell"));
+        writeSmallCell(d, "0_0");
+        CellData c = CellData.load(d.resolve("world_0_0.lotpack"), d.resolve("0_0.lotheader"));
+        int overlayIdx = c.tileIndex("mix_1");
+        int wallIdx = c.tileIndex("mix_0");
+        int floorIdx = c.tileIndex("mix_2");
+        int fridgeIdx = c.tileIndex("mix_3");
+        c.setSquare(3, 3, 0, new int[]{overlayIdx, wallIdx, floorIdx, fridgeIdx}, 5);
+
+        Square sq = Square.at(c, ti, 3, 3, 0);
+        check("north wall is the structure, not the grime", "mix_0".equals(sq.northWall));
+        check("overlay kept separately", sq.overlays.contains("mix_1"));
+        check("floor resolved", "mix_2".equals(sq.floor));
+        check("container type surfaced", "fridge".equals(sq.containerType));
+        check("blocks movement", sq.blocksMovement);
+        check("room id carried", sq.roomId == 5);
+        check("indoors", sq.indoors());
+        check("hasWall", sq.hasWall());
+
+        // Windows: the wall segment is structure, the pane is a fixture.
+        check("WindowW wall is structural", ti.isStructuralWall("mix_4"));
+        check("glass pane is a fixture, not structure",
+                ti.isWallFixture("mix_5") && !ti.isStructuralWall("mix_5"));
+        check("window wall detected", ti.isWindowWall("mix_4"));
+        check("DoorWallN detected as doorway", ti.isDoorway("mix_6"));
+
+        c.setSquare(4, 4, 0, new int[]{c.tileIndex("mix_5"), c.tileIndex("mix_4"),
+                c.tileIndex("mix_2")}, -1);
+        Square win = Square.at(c, ti, 4, 4, 0);
+        check("west wall is the wall, not the pane", "mix_4".equals(win.westWall));
+        check("pane recorded as a fixture", win.fixtures.contains("mix_5"));
+        check("west edge flagged as window", win.westIsWindow);
+        check("hasWindow", win.hasWindow);
+
+        c.setSquare(5, 5, 0, new int[]{c.tileIndex("mix_6")}, -1);
+        Square door = Square.at(c, ti, 5, 5, 0);
+        check("north edge flagged as doorway", door.northIsDoorway);
+        check("doorway is still a wall", "mix_6".equals(door.northWall));
     }
 
     static void i32(ByteArrayOutputStream o, int v) {
