@@ -30,7 +30,8 @@ public final class GisCells {
         System.out.println();
 
         TileIndex ti = TileIndex.load(mediaDir);
-        TilePalette pal = TilePalette.pick(ti);
+        TilePalette pal = TilePalette.pick(ti, SpriteNames.load(mediaDir.resolve("texturepacks")));
+        pal.verify();
         System.out.println("tile palette:\n   " + pal);
         if (!pal.complete()) {
             System.out.println("\nincomplete palette; cannot generate cells");
@@ -49,7 +50,7 @@ public final class GisCells {
         Files.createDirectories(mapDir);
 
         int written = 0;
-        long totalRooms = 0, totalSquares = 0;
+        long totalRooms = 0, totalSquares = 0, totalEdgeFill = 0;
         List<int[]> spawns = new ArrayList<>();
 
         for (int cy = 0; cy < cellsY; cy++)
@@ -66,13 +67,22 @@ public final class GisCells {
                 int wnIdx = cell.tileIndex(pal.wallNorth);
                 int wwIdx = cell.tileIndex(pal.wallWest);
 
-                int squares = 0;
+                int squares = 0, edgeFilled = 0;
                 for (int x = 0; x < 256; x++)
                     for (int y = 0; y < 256; y++) {
                         int gx = ox + x, gy = oy + y;
-                        if (gx >= g.width || gy >= g.height) continue;
+                        boolean inRaster = gx < g.width && gy < g.height;
 
-                        List<Integer> stack = new ArrayList<>();
+                    List<Integer> stack = new ArrayList<>();
+                    if (!inRaster) {
+                        // Previously `continue`, which left the square empty.
+                        // IsoChunk.hasEmptySquaresOnLevelZero() returns true if
+                        // even one of a chunk's 64 squares has no object at z=0,
+                        // and WorldGenChunk.generateChunks then hands the whole
+                        // chunk to genRandomChunk. One gap discards the chunk.
+                        stack.add(floorIdx);
+                        edgeFilled++;
+                    } else {
                         switch (g.cover[gx][gy]) {
                             case BUILDING -> stack.add(intIdx);
                             case ROAD -> stack.add(roadIdx);
@@ -80,6 +90,7 @@ public final class GisCells {
                         }
                         if (g.northWall[gx][gy]) stack.add(wnIdx);
                         if (g.westWall[gx][gy]) stack.add(wwIdx);
+                    }
 
                         int[] arr = new int[stack.size()];
                         for (int i = 0; i < arr.length; i++) arr[i] = stack.get(i);
@@ -106,6 +117,7 @@ public final class GisCells {
                 }
                 totalRooms += rects.size();
                 totalSquares += squares;
+                totalEdgeFill += edgeFilled;
 
                 String cellName = (ORIGIN_CELL_X + cx) + "_" + (ORIGIN_CELL_Y + cy);
                 Files.write(mapDir.resolve(cellName + ".lotheader"), h.write());
@@ -118,10 +130,13 @@ public final class GisCells {
                         mapDir.resolve(cellName + ".lotheader"));
                 if (check.cellSize != 256)
                     throw new IllegalStateException("generated cell " + cellName + " reparsed wrong");
+
+                assertNoEmptySquares(check, cellName);
             }
 
         System.out.println("cells written: " + written
-                + "   squares: " + totalSquares + "   rooms: " + totalRooms);
+                + "   squares: " + totalSquares + "   rooms: " + totalRooms
+                + "   edge-filled: " + totalEdgeFill);
 
         writeModInfo(modsDir.resolve(modName), modName);
         writeSupportFiles(mapDir, modName, spawns);
@@ -137,6 +152,33 @@ public final class GisCells {
         System.out.println("\nWhen starting a new game, pick \"" + modName
                 + "\" from the location list.\nIf it is absent the map is not"
                 + " registered and the cells will never be read.");
+    }
+
+    /**
+     * Mirror of IsoChunk.hasEmptySquaresOnLevelZero(), run against the REPARSED
+     * cell.
+     *
+     * WorldGenChunk.generateChunks calls that predicate per 8x8 chunk. If it
+     * returns true, the chunk goes to genRandomChunk and everything authored in
+     * it is discarded. It returns true if even one of the 64 squares has no
+     * object at z=0.
+     *
+     * Reparsed deliberately: asserting against the in-memory cell would only
+     * prove the writer agrees with itself.
+     */
+    static void assertNoEmptySquares(CellData c, String cellName) {
+        for (int y = 0; y < 256; y++) {
+            for (int x = 0; x < 256; x++) {
+                int[] t = c.tilesAt(x, y, 0);
+                if (t == null || t.length == 0) {
+                    throw new IllegalStateException(
+                            "cell " + cellName + " square " + x + "," + y
+                                    + " (chunk " + (x / 8) + "," + (y / 8) + ")"
+                                    + " has no object at z=0; WorldGen would replace"
+                                    + " that entire chunk with procedural terrain");
+                }
+            }
+        }
     }
 
     /** Bounding boxes of connected building regions, clipped to one cell. */
@@ -179,7 +221,8 @@ public final class GisCells {
         Files.writeString(mapDir.resolve("map.info"),
                 "title=" + modName + "\n"
               + "description=Generated from public-domain GIS data by pzformat\n"
-              + "lots=Muldraugh, KY\n");
+              + "lots=Muldraugh, KY\n"
+                + "fixed2x=true\n");
 
         // No spawnregions.lua: a working B42 map mod ships none. That file is
         // a multiplayer server config, not a single-player registration hook.
@@ -228,10 +271,13 @@ public final class GisCells {
      * grass_plain gives grass with bushes at 1% and each tree type at roughly
      * 0.1%: scattered cover rather than woodland.
      *
-     * Unverified: whether this SUPPRESSES generation over our roads and
-     * buildings or merely changes what gets generated. If scattered growth
-     * still appears on top of the import, the per-chunk chunkdata_*.bin route
-     * is the next thing to try.
+     * Confirmed: this changes WHAT generates, not WHETHER generation runs.
+     * WorldGenChunk never references StaticModule; suppression comes solely
+     * from every z=0 square being occupied. Keep this file — removing it does
+     * not stop generation, it only makes the result forest again.
+     *
+     * chunkdata_*.bin is not a fallback route. It is zombie population data
+     * and has no effect on WorldGen.
      */
     static void writeWorldGenOverride(Path mapDir, int cellsX, int cellsY) throws Exception {
         int xmin = ORIGIN_CELL_X * 256, ymin = ORIGIN_CELL_Y * 256;
