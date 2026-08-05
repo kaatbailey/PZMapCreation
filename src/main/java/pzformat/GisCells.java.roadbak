@@ -68,8 +68,6 @@ public final class GisCells {
                 int wwIdx = cell.tileIndex(pal.wallWest);
 
                 int squares = 0, edgeFilled = 0;
-                int[] roadSpawn = null;
-                long roadBest = Long.MAX_VALUE;
                 for (int x = 0; x < 256; x++)
                     for (int y = 0; y < 256; y++) {
                         int gx = ox + x, gy = oy + y;
@@ -87,15 +85,7 @@ public final class GisCells {
                     } else {
                         switch (g.cover[gx][gy]) {
                             case BUILDING -> stack.add(intIdx);
-                            case ROAD -> {
-                                    stack.add(roadIdx);
-                                    long d = (long) (x - 128) * (x - 128)
-                                            + (long) (y - 128) * (y - 128);
-                                    if (d < roadBest) {
-                                        roadBest = d;
-                                        roadSpawn = new int[]{x, y};
-                                    }
-                                }
+                            case ROAD -> stack.add(roadIdx);
                             default -> stack.add(floorIdx);
                         }
                         if (g.northWall[gx][gy]) stack.add(wnIdx);
@@ -121,12 +111,10 @@ public final class GisCells {
                         for (int y = r[1]; y < r[1] + r[3]; y++)
                             if (x < 256 && y < 256 && cell.tilesAt(x, y, 0) != null)
                                 cell.setSquare(x, y, 0, cell.tilesAt(x, y, 0), h.rooms.size() - 1);
-                    // Spawn goes on a road square instead; see below.
+                    if (spawns.size() < 8)
+                        spawns.add(new int[]{ORIGIN_CELL_X + cx, ORIGIN_CELL_Y + cy,
+                                r[0] + r[2] / 2, r[1] + r[3] / 2});
                 }
-                if (roadSpawn != null && spawns.size() < 8)
-                    spawns.add(new int[]{ORIGIN_CELL_X + cx, ORIGIN_CELL_Y + cy,
-                            roadSpawn[0], roadSpawn[1]});
-
                 totalRooms += rects.size();
                 totalSquares += squares;
                 totalEdgeFill += edgeFilled;
@@ -159,7 +147,7 @@ public final class GisCells {
                 + " to " + (ORIGIN_CELL_X + cellsX - 1) + "_" + (ORIGIN_CELL_Y + cellsY - 1)
                 + ", well clear of vanilla Knox County");
         if (!spawns.isEmpty())
-            System.out.println("spawn point set on a road square at cell "
+            System.out.println("spawn point set inside a generated building at cell "
                     + spawns.get(0)[0] + "_" + spawns.get(0)[1]
                     + ", world tile " + (spawns.get(0)[0] * 256 + spawns.get(0)[2])
                     + "," + (spawns.get(0)[1] * 256 + spawns.get(0)[3])
