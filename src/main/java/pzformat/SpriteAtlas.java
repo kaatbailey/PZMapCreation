@@ -26,7 +26,9 @@ public final class SpriteAtlas {
     public static final String[] MAP_PACKS = {
         "Tiles1x.pack", "Tiles1x.floor.pack",
         "Tiles2x.pack", "Tiles2x.floor.pack",
-        "JumboTreesBigs2x.pack", "Overlays2x.pack", "Overlays2x.floor.pack"
+        "JumboTrees1x.pack",
+            "JumboTreesBigs2x.pack", "JumboTrees2x.pack",
+            "Overlays2x.pack", "Overlays2x.floor.pack"
     };
 
     public static final class Sprite {
