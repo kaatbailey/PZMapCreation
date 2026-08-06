@@ -2,3 +2,7 @@ out/
 build/
 .gradle/
 *.class
+*.bak
+*.treebak
+*.spawnbak
+*.roadbak
