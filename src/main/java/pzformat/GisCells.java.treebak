@@ -30,14 +30,9 @@ public final class GisCells {
         System.out.println();
 
         TileIndex ti = TileIndex.load(mediaDir);
-        Set<String> sprites = SpriteNames.load(mediaDir.resolve("texturepacks"));
-        TilePalette pal = TilePalette.pick(ti, sprites);
+        TilePalette pal = TilePalette.pick(ti, SpriteNames.load(mediaDir.resolve("texturepacks")));
         pal.verify();
         System.out.println("tile palette:\n   " + pal);
-
-        TreePalette treePal = TreePalette.pick(ti, sprites);
-        System.out.println("tree palette: " + treePal);
-        String[][] treeAt = TreeScatter.place(g, treePal, 20260806L);
         if (!pal.complete()) {
             System.out.println("\nincomplete palette; cannot generate cells");
             return;
@@ -63,7 +58,6 @@ public final class GisCells {
                 int ox = cx * 256, oy = cy * 256;
 
                 List<String> names = new ArrayList<>(pal.all);
-                names.addAll(treePal.all);
                 LotHeader h = CellData.newHeader(names, 0, 0);
                 CellData cell = CellData.blank(h, 32);
 
@@ -106,9 +100,6 @@ public final class GisCells {
                         }
                         if (g.northWall[gx][gy]) stack.add(wnIdx);
                         if (g.westWall[gx][gy]) stack.add(wwIdx);
-                            if (treeAt[gx][gy] != null) {
-                                stack.add(cell.tileIndex(treeAt[gx][gy]));
-                            }
                     }
 
                         int[] arr = new int[stack.size()];
