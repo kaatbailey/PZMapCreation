@@ -7,49 +7,62 @@ import java.util.Set;
 import java.util.TreeMap;
 
 /**
- * Tree tiles, bucketed by size class and species.
+ * Trees as map data actually stores them.
  *
- * The `tree` property is a size class 1-8, matching the WorldGen feature files
- * in media/lua/server/WorldGen/features/tree/ — sapling, plain, jumbo,
- * jumbo_xl, jumbo_xxl across ten species. Classes 5-8 are fully sprite-covered;
- * 1-4 have a handful of tiles with no atlas entry.
+ * CONFIRMED against vanilla Muldraugh cell 35_35, which authors exactly four
+ * tree tiles: vegetation_trees_01_8 through _11. No species tiles appear in
+ * any vanilla lotheader.
  *
- * Species is taken from the tileset name (e_americanhollyJUMBO_1,
- * e_riverbirchJUMBO_1, ...) so a scatter can keep a grove to one species
- * instead of mixing every tree in the game at random.
+ * The point that took three wrong iterations to find: the e_redmapleJUMBO_1 /
+ * e_virginiapineJUMBOXXL_1 sheets are RENDER-TIME art, not map data. The
+ * engine substitutes species and mature size at runtime, driven by the biome.
+ * What a map authors is only "a tree of size N here" — which is why these
+ * generic tiles carry a bare `tree` value, `solid`, `attachedFloor` and
+ * nothing else, and why they have no sprite in any atlas.
  *
- * These tiles only became selectable once the legacy .pack layout parsed —
- * JumboTrees1x.pack and JumboTrees2x.pack are both legacy, so before that every
- * tree in the game looked like it had no sprite.
+ * Consequence worth remembering: species mix and mature size CANNOT be
+ * controlled from the lotpack. That belongs in WorldGenOverride.lua biome
+ * selection. Placement controls where trees are and how big they start.
+ *
+ * Sprites are deliberately NOT required here. The correct tiles have none —
+ * requiring them is what made this sheet look unusable and sent the earlier
+ * attempts off into the species art. The renderer therefore cannot preview
+ * trees; only the game can draw them.
  */
 public final class TreePalette {
 
-    /** Small trees for the band close to buildings. */
-    public static final int YARD_MIN = 3, YARD_MAX = 4;
-    /** Full-grown but not the 192x256 giants. */
-    public static final int CANOPY_MIN = 5, CANOPY_MAX = 6;
+    /** The sheet vanilla authors trees from. */
+    public static final String SHEET = "vegetation_trees_01";
 
-    public final Map<String, List<String>> canopyBySpecies = new TreeMap<>();
-    public final Map<String, List<String>> yardBySpecies = new TreeMap<>();
+    /** A felled tree. One tile, from WorldGen's stumps feature. Has a sprite. */
+    public static final String STUMP = "crafted_02_86";
+
+    /** size class -> tile names. Only 1 (sapling) and 2 (tree) exist here. */
+    private final Map<Integer, List<String>> bySize = new TreeMap<>();
+
     /** Every tile name chosen, so the cell header can declare them. */
     public final List<String> all = new ArrayList<>();
+
+    public boolean hasStump;
 
     public static TreePalette pick(TileIndex ti, Set<String> sprites) {
         TreePalette p = new TreePalette();
 
         for (String n : ti.byName.keySet()) {
             TileDefs.Tile t = ti.get(n);
-            if (t == null) {
+            if (t == null || !SHEET.equals(t.tileset)) {
+                continue;
+            }
+            if (ti.kindOf(n) != TileIndex.Kind.VEGETATION) {
                 continue;
             }
             String v = t.props.get("tree");
             if (v == null || v.isEmpty()) {
                 continue;
             }
-            if (!sprites.contains(n)) {
-                continue;
-            }
-            if (ti.kindOf(n) != TileIndex.Kind.VEGETATION) {
+            // `solid` separates trunks from ground cover on this sheet: the
+            // non-solid VEGETATION entries are bushes and grass clumps.
+            if (!t.props.containsKey("solid")) {
                 continue;
             }
             int size;
@@ -58,46 +71,50 @@ public final class TreePalette {
             } catch (NumberFormatException e) {
                 continue;
             }
-
-            Map<String, List<String>> bucket;
-            if (size >= CANOPY_MIN && size <= CANOPY_MAX) {
-                bucket = p.canopyBySpecies;
-            } else if (size >= YARD_MIN && size <= YARD_MAX) {
-                bucket = p.yardBySpecies;
-            } else {
-                continue;
-            }
-            bucket.computeIfAbsent(t.tileset, k -> new ArrayList<>()).add(n);
+            p.bySize.computeIfAbsent(size, k -> new ArrayList<>()).add(n);
             p.all.add(n);
+        }
+
+        if (sprites.contains(STUMP)) {
+            p.hasStump = true;
+            p.all.add(STUMP);
         }
         return p;
     }
 
-    public boolean usable() {
-        return !canopyBySpecies.isEmpty();
-    }
-
-    /** Species names for a band, falling back to canopy when yard is empty. */
-    public List<String> species(boolean canopy) {
-        Map<String, List<String>> m = canopy || yardBySpecies.isEmpty()
-                ? canopyBySpecies : yardBySpecies;
-        return new ArrayList<>(m.keySet());
-    }
-
-    public List<String> variants(boolean canopy, String species) {
-        Map<String, List<String>> m = canopy || yardBySpecies.isEmpty()
-                ? canopyBySpecies : yardBySpecies;
-        List<String> v = m.get(species);
-        if (v == null || v.isEmpty()) {
-            v = canopyBySpecies.get(species);
+    /** Tiles at a size class, falling back to the nearest available. */
+    public List<String> tilesNear(int size) {
+        List<String> exact = bySize.get(size);
+        if (exact != null && !exact.isEmpty()) {
+            return exact;
         }
-        return v;
+        for (int d = 1; d <= 8; d++) {
+            List<String> lo = bySize.get(size - d);
+            if (lo != null && !lo.isEmpty()) {
+                return lo;
+            }
+            List<String> hi = bySize.get(size + d);
+            if (hi != null && !hi.isEmpty()) {
+                return hi;
+            }
+        }
+        return null;
+    }
+
+    public boolean usable() {
+        return !bySize.isEmpty();
     }
 
     @Override public String toString() {
-        int canopyTiles = canopyBySpecies.values().stream().mapToInt(List::size).sum();
-        int yardTiles = yardBySpecies.values().stream().mapToInt(List::size).sum();
-        return canopyBySpecies.size() + " canopy species (" + canopyTiles + " tiles), "
-                + yardBySpecies.size() + " yard species (" + yardTiles + " tiles)";
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<Integer, List<String>> e : bySize.entrySet()) {
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append("size ").append(e.getKey()).append(": ")
+                    .append(e.getValue().size()).append(" tiles");
+        }
+        return sb + (hasStump ? ", stumps available" : ", NO stump tile")
+                + "  (no sprites by design; the engine substitutes species art)";
     }
 }

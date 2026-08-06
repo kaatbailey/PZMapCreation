@@ -4,48 +4,62 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * Structured tree placement.
+ * Tree placement driven by distance from habitation.
  *
- * Uniform scatter reads as noise. This drives density off the distance to the
- * nearest building or road, which the GIS data already gives us, so the result
- * has cleared yards, verges along the road, and thickening woodland further
- * out — the shape a lived-in place actually has.
+ * Distance to the nearest building or road is a good proxy for how long ground
+ * has gone undisturbed, so it drives how DENSE the trees are and whether they
+ * start as saplings or full trees. Yards and verges stay open, regrowth
+ * thickens outward.
+ *
+ * What it deliberately does NOT do: choose species or mature size. Authored
+ * map data cannot express those — vanilla writes only generic
+ * vegetation_trees_01 tiles carrying a `tree` size class, and the engine picks
+ * the actual pine or maple at runtime from the biome. Attempting to author
+ * species art directly produces canopies lying on the grass. If you want
+ * conifers dominating the far ground, that goes in WorldGenOverride.lua.
  *
  * Bands, by BFS distance in tiles from any building or road square:
  *
- *   0  .. CLEAR   nothing. Yards and road verges stay open.
- *   .. YARD       sparse ornamental trees, small size class.
- *   .. MID        moderate.
- *   beyond        woodland.
+ *   0 .. CLEAR   nothing. Yards and road verges stay open.
+ *   .. 9         sparse saplings. Planted, kept small.
+ *   .. 22        regrowth.
+ *   .. 45        woodland.
+ *   beyond       dense.
  *
- * Two touches that matter more than the density curve:
+ * Stumps are scattered thinly beyond the clear band. A stump is a tree that
+ * was there and isn't.
  *
- *   - Species is chosen per GROVE-sized block, not per tile, so a stand of
- *     trees is one species. Per-tile choice mixes ten species evenly and looks
- *     like confetti.
- *   - A minimum spacing stops trunks clumping. Jumbo sprites are up to
- *     192x256, so adjacent trees overlap into an unreadable mass.
+ * A minimum spacing keeps trunks off adjacent squares.
  *
- * Deterministic for a given seed: the same GIS input produces the same forest,
- * so a render diff between runs shows real changes rather than reshuffled noise.
+ * Deterministic for a given seed, so a diff between runs shows real changes
+ * rather than reshuffled noise.
  */
 public final class TreeScatter {
 
     public static final int CLEAR = 3;
-    public static final int YARD = 9;
-    public static final int MID = 22;
-
-    public static final double P_YARD = 0.010;
-    public static final double P_MID = 0.035;
-    public static final double P_WOOD = 0.080;
 
     /** Minimum tiles between trunks. */
     public static final int SPACING = 2;
-    /** Species stays constant within a block this many tiles across. */
-    public static final int GROVE = 32;
+
+    /** Chance per eligible square of a stump instead of a tree. */
+    public static final double P_STUMP = 0.0010;
 
     /**
-     * @return tile name per raster square, or null where no tree goes.
+     * @param maxDist upper bound of the band
+     * @param size    `tree` size class to author (1 sapling, 2 tree)
+     * @param density chance per eligible square
+     */
+    record Band(int maxDist, int size, double density, String label) { }
+
+    static final Band[] BANDS = {
+            new Band(9,  1, 0.020, "roadside"),
+            new Band(22, 2, 0.035, "regrowth"),
+            new Band(45, 2, 0.070, "woodland"),
+            new Band(Integer.MAX_VALUE, 2, 0.080, "dense"),
+    };
+
+    /**
+     * @return tile name per raster square, or null where nothing goes.
      */
     public static String[][] place(GisImport g, TreePalette tp, long seed) {
         int w = g.width, h = g.height;
@@ -60,66 +74,77 @@ public final class TreeScatter {
         Random rng = new Random(seed);
         boolean[][] taken = new boolean[w][h];
 
-        List<String> canopySpecies = tp.species(true);
-        List<String> yardSpecies = tp.species(false);
-
-        long yard = 0, mid = 0, wood = 0;
+        long[] perBand = new long[BANDS.length];
+        long stumps = 0;
 
         for (int x = 0; x < w; x++) {
             for (int y = 0; y < h; y++) {
                 if (isStructure(g, x, y)) {
                     continue;
                 }
-
                 int d = dist[x][y];
                 if (d <= CLEAR) {
                     continue;
                 }
 
-                boolean canopy;
-                double p;
-                if (d <= YARD) {
-                    p = P_YARD;
-                    canopy = false;
-                } else if (d <= MID) {
-                    p = P_MID;
-                    canopy = true;
-                } else {
-                    p = P_WOOD;
-                    canopy = true;
+                int bi = bandFor(d);
+                Band band = BANDS[bi];
+
+                // A stump is a tree that used to be here, so it competes for
+                // the same square and respects the same spacing.
+                if (tp.hasStump && rng.nextDouble() < P_STUMP) {
+                    if (!tooClose(taken, x, y, w, h)) {
+                        out[x][y] = TreePalette.STUMP;
+                        taken[x][y] = true;
+                        stumps++;
+                    }
+                    continue;
                 }
 
-                if (rng.nextDouble() >= p) {
+                if (rng.nextDouble() >= band.density()) {
                     continue;
                 }
                 if (tooClose(taken, x, y, w, h)) {
                     continue;
                 }
 
-                List<String> pool = canopy || yardSpecies.isEmpty()
-                        ? canopySpecies : yardSpecies;
-                String sp = pool.get(groveHash(x / GROVE, y / GROVE, seed, pool.size()));
-                List<String> variants = tp.variants(canopy, sp);
+                List<String> variants = tp.tilesNear(band.size());
                 if (variants == null || variants.isEmpty()) {
                     continue;
                 }
 
                 out[x][y] = variants.get(rng.nextInt(variants.size()));
                 taken[x][y] = true;
-                if (d <= YARD) yard++;
-                else if (d <= MID) mid++;
-                else wood++;
+                perBand[bi]++;
             }
         }
 
-        System.out.println("trees: " + (yard + mid + wood) + " placed"
-                + "  (yard " + yard + ", mid " + mid + ", woodland " + wood + ")");
+        long total = 0;
+        for (long n : perBand) {
+            total += n;
+        }
+        System.out.println("trees: " + total + " placed, " + stumps + " stumps");
+        for (int i = 0; i < BANDS.length; i++) {
+            System.out.printf("   %-10s size %d  %6d%n",
+                    BANDS[i].label(), BANDS[i].size(), perBand[i]);
+        }
+        System.out.println("   (species and mature size are chosen by the engine"
+                + " at runtime; the renderer cannot preview these)");
         return out;
+    }
+
+    static int bandFor(int d) {
+        for (int i = 0; i < BANDS.length; i++) {
+            if (d <= BANDS[i].maxDist()) {
+                return i;
+            }
+        }
+        return BANDS.length - 1;
     }
 
     /**
      * BFS distance from every building or road square. Squares that ARE
-     * structure get 0, so the clear band measures outward from them.
+     * structure get 0, so bands measure outward from them.
      */
     static int[][] distanceToStructure(GisImport g) {
         int w = g.width, h = g.height;
@@ -138,13 +163,8 @@ public final class TreeScatter {
             }
         }
 
-        // No structure anywhere: everything is woodland.
+        // No structure anywhere: everything is the densest band.
         if (tail == 0) {
-            for (int x = 0; x < w; x++) {
-                for (int y = 0; y < h; y++) {
-                    dist[x][y] = Integer.MAX_VALUE;
-                }
-            }
             return dist;
         }
 
@@ -186,14 +206,5 @@ public final class TreeScatter {
             }
         }
         return false;
-    }
-
-    /** Stable per-block species choice, independent of iteration order. */
-    static int groveHash(int bx, int by, long seed, int n) {
-        long v = seed;
-        v = v * 0x9E3779B97F4A7C15L + bx * 0xBF58476D1CE4E5B9L;
-        v = v * 0x9E3779B97F4A7C15L + by * 0x94D049BB133111EBL;
-        v ^= (v >>> 31);
-        return (int) Math.floorMod(v, n);
     }
 }

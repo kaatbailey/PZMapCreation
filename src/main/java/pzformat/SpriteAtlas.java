@@ -94,7 +94,10 @@ public final class SpriteAtlas {
                         s.name = e.name; s.pack = packName; s.pageIndex = pi;
                         s.x = e.x; s.y = e.y; s.w = e.w; s.h = e.h;
                         s.ox = e.ox; s.oy = e.oy; s.fx = e.fx; s.fy = e.fy;
-                        s.scale = e.fx >= TILE_W * 2 ? 0.5 : 1.0;
+                        // Scale is a property of the PACK, not the sprite. Jumbo trees are
+                        // 1x art at 192x256 - large, not double-resolution - and the old
+                        // width heuristic halved them into ground-level shrubs.
+                        s.scale = packName.contains("2x") ? 0.5 : 1.0;
                         s.pngBytes = page.png;
                         a.byName.put(e.name, s);
                         a.spritesIndexed++;
