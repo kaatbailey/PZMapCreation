@@ -218,7 +218,6 @@ public final class GisCells {
         writeModInfo(modsDir.resolve(modName), modName);
         writeSupportFiles(mapDir, modName, spawns);
         writeWorldGenOverride(mapDir, cellsX, cellsY);
-        BiomeMapWriter.write(g, mapDir, cellsX, cellsY, ORIGIN_CELL_X, ORIGIN_CELL_Y);
 
         System.out.println("\nmod written to " + modsDir.resolve(modName));
         System.out.println("cells occupy " + ORIGIN_CELL_X + "_" + ORIGIN_CELL_Y
