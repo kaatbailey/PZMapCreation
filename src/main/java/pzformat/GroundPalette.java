@@ -42,13 +42,30 @@ public final class GroundPalette {
      */
     record BaseGroup(int[] indices, double weight, double overlayRate, String label) { }
 
+    /**
+     * Grass only.
+     *
+     * The dirt groups — 64/69/70/71 (`dirt`) and 80/85/86/87 (`dirt_grass`) —
+     * were here at a combined 13.9%, taken from a Muldraugh survey. In game
+     * they read as bare diamonds scattered through forest, because
+     * biomes/map/ph_forest.lua excludes those exact tiles from PLANT and BUSH
+     * placements and genMapSquare then deletes any vegetation sitting on them.
+     *
+     * Dirt is still the right floor for a track, a yard or an unpaved road.
+     * It just should not be scattered through open country at random.
+     *
+     * Weights are relative and normalised at use, so dropping two groups
+     * simply reweights the rest: roughly 70 / 21 / 10.
+     */
     static final BaseGroup[] GROUPS = {
             new BaseGroup(new int[]{16, 21, 22, 23}, 58.6, 0.606, "grass, dense"),
             new BaseGroup(new int[]{32, 37, 38, 39}, 17.4, 0.370, "grass, medium"),
             new BaseGroup(new int[]{48, 53, 54, 55},  8.1, 0.152, "grass, light"),
-            new BaseGroup(new int[]{64, 69, 70, 71},  7.7, 0.000, "sparse, dark"),
-            new BaseGroup(new int[]{80, 85, 86, 87},  6.2, 0.000, "sparse, light"),
     };
+
+    /** Kept for deliberate use: tracks, yards, unpaved roads. */
+    public static final int[] DIRT = {64, 69, 70, 71};
+    public static final int[] DIRT_GRASS = {80, 85, 86, 87};
 
     /** Per-tile weight for each row of the overlay sheet, rows 0..8. */
     static final double[] OVERLAY_ROW_WEIGHT = {
