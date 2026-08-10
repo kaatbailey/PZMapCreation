@@ -89,6 +89,10 @@ measurement**, and reasoning is what produced the x/y transposition and the
 positions and compare against what `outlineRoom` generates for the same
 rectangle. Do this before building anything on top of room creation.
 
+**CLOSED 2026-08-10 — the offsets are correct. See §18.** The thread was
+already stale when written: `Probe roomgeom` had made the measurement and
+§10 recorded it.
+
 ### GIS track
 
 The pipeline works end to end. A GIS area becomes 4 cells that load in game
@@ -403,6 +407,28 @@ numbers first.** They say where the player actually was.
 
 The same 300-vs-256 legacy compatibility appears in `MapFiles.postLoad`, which
 converts bounds with `minX * 256.0F / 300.0F`.
+
+### Reading vanilla spawnpoints — the inverse conversion
+
+§7 recorded the forward transform only, which is why finding a known-good
+vanilla building has been done by eye. The inverse is the useful direction:
+a spawnpoint is a coordinate someone at TIS chose deliberately, and vanilla
+spawns are inside buildings.
+
+```
+$MAPS/Muldraugh, KY/spawnpoints.lua        plain Lua, readable
+```
+
+```java
+int worldTileX = worldX * 300 + posX;      // legacy 300-tile cell -> world tile
+int cellX      = worldTileX / 256;         // B42 256-tile cell
+int localX     = worldTileX % 256;         // square within that cell
+```
+
+Same for Y. Feed `cellX_cellY` to `Probe lotheader` and `localX localY` to
+`Probe square`. **UNVERIFIED**: that vanilla B42 keeps spawnpoints in this
+file and this format at all. Confirm by reading it before relying on it; if
+the shape differs, that fact belongs here.
 
 ---
 
@@ -752,10 +778,25 @@ Acting on any of these wastes real time.
 | Map data can specify tree species and mature size | **FALSE.** Generic tiles only; the engine substitutes (§11). |
 | Authoring vegetation into the lotpack works | **FALSE.** `genMapSquare` deletes and replaces TREE/BUSH/PLANT per tile (§9). |
 | Ground should imitate Muldraugh's measured tile mix | **FALSE.** Muldraugh is hand-authored. Drive from biome definitions (§8, §9). |
+| GIS footprints can be rasterized at their real-world bearing | **FALSE.** Room rects are `x, y, w, h` with no rotation field; walls are N/W edges only. Off-axis footprints stair-step and their rooms do not register cleanly (§17). |
+| Vanilla `spawnpoints.lua` uses `worldX`/`worldY` plus 300-tile offsets | **FALSE for B42 retail.** Muldraugh's file has `posX`/`posY`/`posZ` only, as absolute world tiles. Our write path uses the legacy form and works, so the reader evidently accepts both (§18). |
+| A cell's per-square room id identifies the room | **FALSE.** `-1` on every interior square sampled. Membership comes from lotheader rects only (§18). |
+| Off-axis rooms exist in vanilla Muldraugh | **UNSUPPORTED — printed by a broken guard, twice.** Both times the alignment test was measuring interior partitions, not skew. Current best answer: no off-axis room found (§19). |
+| `alignment()` is a working prototype of A4's "expressible as a rect" rule | **OVERSTATED.** It took four attempts to stop false-positiving on vanilla, and it cannot test 80.3% of rects (§19). |
+| Cell 200_200 can test `outlineRoom` | **FALSE.** GIS buildings do not go through `outlineRoom`, and their bbox rects do not match their diagonal wall runs. The measurement is void, not negative (§18). |
+| Multi-user editing is a reason to prefer a Spring Boot + WebGL UI | **SUPERSEDED.** CHARTER §3, 2026-08-08: no multi-user concurrent editing. The UI fork stays open on other grounds. |
 
 Known-stale, not yet cleaned up: `TreeScatter` / `TreePalette` still place
 ~7,800 trees the engine deletes; `WorldGenOverride.lua` is still written and is
 superseded by the biome map.
+
+**Do not re-derive this from a grep.** `TreeScatter` and `TreePalette` have
+live callers in `GisCells` and `BiomeMapWriter`, and `treeAt` is genuinely
+read and written into the square stack. That does **not** contradict the
+line above: "superseded" here means the engine discards the output on load
+(§9), not that the code is unreachable. A session on 2026-08-10 ran that
+grep, found the callers, and wrongly concluded A2's premise was false. See
+§20 for what the callers actually mean for the deletion.
 
 ---
 
@@ -788,6 +829,15 @@ superseded by the biome map.
 | 25 | Decompile `BiomeMap` / `BiomeRaster` | R=biome, G=zone, one pixel per tile |
 | 26 | Write biome maps, load in game | **Gradient visible, no seam, ore veins generating** |
 | 27 | Drop dirt groups | Bare diamonds gone; forest floor continuous |
+| 28 | Spawnpoint -> cell arithmetic, then `square` | Landed inside `livingroom`, cell 42_40. Absolute-tile reading confirmed |
+| 29 | `roomgeom` on vanilla 42_40 | 86 rooms; far offsets win 67.0 vs 10.2 and 83.9 vs 3.7. `weldingworkshop` exact on all four corners |
+| 30 | `roomgeom` on generated 200_200 | **Void, not negative.** Diagonal walls inside bbox rects; 24.1 vs 22.2 is noise |
+| 31 | Guards added, rerun 42_40 and 200_200 | Vanilla unchanged and CORRECT at 6.6x/22.4x; 200_200 refuses to conclude |
+| 32 | `PaletteScan --prop Facing` | Objects only: N/S/E/W, ~6,200 tiles, no diagonals. Walls carry orientation as `Wall*` flags instead |
+| 33 | `findprop WallSE` on 42_40 | `PaintingType = pillar`. A post, not an edge. `edgeOf` returns NONE for it |
+| 34 | Alignment sweep, attempt 1 (interior fraction) | 674 non-aligned. **All false positives** — bathrooms, halls, barns with one partition |
+| 35 | Alignment sweep, attempt 2 (slope of per-row mean) | 0 non-aligned, but also cleared the known diagonal. r2 0.227 |
+| 36 | Alignment sweep, attempt 3 (concentration) | GIS caught at 0.19/0.20; vanilla down to 53, still false positives |
 
 ---
 
@@ -795,9 +845,15 @@ superseded by the biome map.
 
 ### Immediate — evidence already in hand
 
-- [ ] Verify `outlineRoom` far-side wall placement against a real Muldraugh room
+- [x] Verify `outlineRoom` far-side wall placement against a real Muldraugh room
+      — **done 2026-08-10, offsets correct (§18). A3, A4, A5 unblocked.**
 - [ ] Delete `TreeScatter` and `TreePalette`; the engine deletes their output
+      — **not wholesale: `BiomeMapWriter` needs `distanceToStructure` (§20)**
 - [ ] Stop writing `WorldGenOverride.lua`; the biome map supersedes it
+      — testable with no code change: delete the file from the generated mod
+      directory and load (§20)
+- [ ] Open question surfaced by A2: do authored tree tiles and engine biome
+      vegetation target the same squares? (§20)
 - [ ] Regenerate and confirm in game that nothing changes — that proves they
       were dead weight rather than assuming it
 
@@ -808,6 +864,10 @@ Current output is one bounding box per footprint with derived perimeter walls.
 before writing anything.
 
 - [ ] Read `StaticModule.prefab` in the decompiler; decide the fork on evidence
+- [ ] Count Muldraugh rooms with `rectCount > 1` forming a diagonal run — is
+      the orientation constraint hard or merely dominant? (§17)
+- [ ] Scan wall tiles for their declared orientation values (§17)
+- [ ] `FootprintSnap` — one module, called by GIS import and by the editor
 - [ ] Decompose footprints into multiple room rectangles
 - [ ] Roofs; exterior doors on street-facing walls; windows
 - [ ] Interior subdivision and doorways
@@ -829,6 +889,9 @@ before writing anything.
 - [ ] **UI architecture is undecided.** Options discussed but never chosen:
       Spring Boot backend + WebGL canvas (gets multi-user editing, the one thing
       WorldEd can't do; costs atlas transfer bandwidth), or native LWJGL/libGDX.
+      **The multi-user clause above is superseded** — CHARTER §3 ruled out
+      concurrent editing on 2026-08-08 (see §13). The fork itself is still
+      open; only that argument for the Spring Boot side is dead.
       A real working store (SQLite or chunked binary) rather than thousands of
       TMX files, with TMX/PZW kept purely as an interop boundary.
 
@@ -843,6 +906,28 @@ before writing anything.
 
 ### Other
 
+- [ ] Scene rotation pass in GIS import: dominant-grid histogram, then rotate
+      buildings, roads and area polygon together before rasterizing (§17)
+- [x] `roomgeom` guards: refuse to conclude when the two offsets are within
+      a few points, and when wall runs are not axis-aligned (§18)
+      — **margin guard done and working. Alignment guard took four attempts
+      and still has 53 known false positives; one-token fix pending (§19).**
+- [ ] **A3 prerequisite:** `TileIndex.edgeOf` falls back to
+      `attachedN`/`attachedW` for tiles with no `Wall*` flag — the exact
+      proxy its own comment warns against. Unreachable from `wallOn`, but
+      `edgeOf` is public and A3 will call it on neighbours. Split it into a
+      separate `decorationEdge()` or return NONE (§19)
+- [ ] **A3 prerequisite:** confirm the tileset variant cycle. In
+      `walls_exterior_house_01` the pattern is `WallW, WallN, WallNW,
+      WallSE` every 4, openings every 16. Wall-joining needs that structure;
+      per-tile flags alone do not say corner-vs-end-vs-junction (§19)
+- [ ] Apply the `&&` fix to `alignment()` and rerun the sweep (§19)
+- [ ] Fix the stale class comment on `LotHeader` — it says the B42 trailer is
+      left unparsed; `readB42Meta` parses all of it (§18)
+- [ ] Test whether `chunkGrid` is zombie density: mean over a town cell vs a
+      forest cell should differ sharply (§18)
+- [ ] Room rects must cover interior squares only — a bbox over a
+      non-rectangular footprint marks outdoor squares as room members (§18)
 - [ ] Road auto-tiling — corner, T-junction, end, edge by neighbour bitmask
 - [ ] Populate `objects.lua` (currently `{}`; vanilla's is 4 MB) — likely
       related to room loot tables and worth checking alongside room type names
@@ -896,3 +981,364 @@ code, not after.
 8. **Renderer scale heuristic** — showed trees as ground-level shrubs for two
    rounds, and 43 sprites as missing, because of a width heuristic and a
    hardcoded pack list.
+
+---
+
+## 17. Building orientation — the grid admits no rotation
+
+Raised 2026-08-10. Partly CONFIRMED from the format already recorded here,
+partly UNVERIFIED and needing a vanilla sample.
+
+### CONFIRMED, from §10 and the renderer
+
+A room is `int32 x, y, w, h`. No rotation field, no polygon, no vertex list.
+A room can only be expressed as a union of axis-aligned rectangles. Walls are
+north/west edges per square, so the geometry has no diagonal wall primitive
+whatever sprite art exists. The camera is fixed isometric: a wall sprite is
+drawn for one facing and cannot be rotated at render time.
+
+So an off-axis footprint is not a cosmetic problem. Walls are objects on
+squares and will happily stair-step, but the room they enclose either fails
+to register or registers as a staircase of 1-wide rects with wall runs
+between the steps. That breaks room detection, room-type loot tables, and
+every validation rule planned for the editor. **The current generated map
+has this pattern.**
+
+### UNVERIFIED — the two checks, before any code
+
+1. **Is the constraint hard or merely dominant?** Count Muldraugh rooms with
+   `rectCount > 1` whose rects form a diagonal run (successive rects offset
+   by ~1 on both axes, with `w` or `h` near 1). **Zero across 90,827 rooms
+   means the snap may refuse outright. Nonzero means it is a strong default
+   with an override**, and one such room must be read before deciding which.
+2. **Which orientations do wall tiles declare?** `PaletteScan "$PZ/media"
+   walls_exterior_house_01` and read the discriminators the tiles carry.
+   Expectation: north, west, and a corner post; nothing diagonal.
+   **Falsifier: any orientation value that is none of those.** If one
+   exists, the wall model underneath A3 is wrong before A3 is written.
+
+Note §11: `wall` is a bare flag with no orientation, and `attachedN` /
+`attachedW` validated at 99.5% while being wrong. Whatever discriminator
+check 2 turns up must be shown to be the tile's own declaration, not another
+correlated proxy.
+
+### `FootprintSnap` — one module, two callers
+
+The same invariant serves GIS import and interactive authoring, which is the
+§2 test for whether GIS work earns its place. A proposed footprint goes
+through the snap and comes out aligned, or is refused.
+
+- **GIS import.** Per-footprint min-area-rectangle alignment is **wrong** —
+  it squares each building against itself and randomises them against each
+  other and the roads, which looks deliberate and is worse than the zigzag.
+  Real towns align to a street grid. Take each footprint's min-area-rect
+  angle mod 90 deg (a rectangle's orientation is 90 deg-periodic), histogram
+  weighted by footprint area, and rotate the **entire scene** — buildings,
+  roads, area polygon — by the dominant mode before rasterizing. Residual
+  per-building deviation then snaps to the nearest 90 deg.
+  **Prediction to write down before running it:** a US grid town shows one
+  mode holding well over half the footprint area within +/-3 deg. Flat or
+  bimodal means the area has no single grid, and whole-scene rotation is the
+  wrong move for it — that is the case needing per-cluster rotation.
+  Roads stair-step fine in vanilla, so rotating them costs nothing.
+- **Editor.** Rectangle tools axis-aligned; free rotation in 90 deg
+  increments only, because arbitrary rotation is unrepresentable rather than
+  discouraged. The snap is the ergonomic face of a rule the validator
+  enforces anyway.
+- **A4 rule: wall run not expressible as a room rect.** This is the
+  enforcement point. It catches hand-painted zigzags whatever tool made
+  them, and it catches imported data that skipped the rotation pass. Snap
+  without the rule leaves the invariant unenforceable on imported data.
+
+### Consequence to remember
+
+Rotating the scene divorces the map from true north. Nothing in game depends
+on that today, but `worldmap.xml` (§15) and any future GIS overlay do — the
+rotation angle must be stored with the import, not discarded.
+
+---
+
+## 18. Session 2026-08-10 — A1 closed, and what it turned up
+
+### A1: `outlineRoom` offsets are CORRECT
+
+Two independent lines, neither of which is our own writer checked through
+our own reader:
+
+**Vanilla measurement.** `Probe roomgeom "$PZ/media" "$MAPS/Muldraugh, KY"
+42_40`, 86 rooms. The discriminating comparison is the same classifier at
+two positions: south `ry+rh` 67.0% vs `ry+rh-1` 10.2%; east `rx+rw` 83.9%
+vs `rx+rw-1` 3.7%. **Ratio, not rate** — this is what makes it immune to the
+§11 `attachedN` failure, where 99.5% absolute was wrong. A miscalibrated
+wall classifier would have to be positionally biased to flip those.
+
+The worked example carries more weight than the percentages.
+`weldingworkshop [57,169 12x12] z=1`, against four predictions written down
+before it was run:
+
+| Predicted | Observed |
+|---|---|
+| `(rx, ry)` carries both edges | `+` at 57,169 |
+| `(rx+rw, ry)` west only | `W` at 69,169 |
+| `(rx, ry+rh)` north only | `N` at 57,181 |
+| **`(rx+rw, ry+rh)` carries neither** | `.` at 69,181 |
+| runs of `rw` and `rh` | 12 and 12 |
+
+48 placements on 47 distinct squares.
+
+**Source inspection.** `CellEditor.outlineRoom` loops north over
+`x0 .. x0+w-1` at `y0` and `y0+h`, west over `y0 .. y0+h-1` at `x0` and
+`x0+w`, and never touches `(x0+w, y0+h)`. That is `2w + 2h` placements on
+`2w + 2h - 1` squares — exactly what vanilla measures.
+
+**The instrument already existed.** `Probe roomgeom` is where §10's
+"86 rooms, both far sides confirmed" came from. §2's open thread was stale
+when it was written. *Check what this project already does, not only what
+vanilla does.*
+
+### Test 30 is void, not negative
+
+`roomgeom` on generated 200_200 printed `outlineRoom's offsets are WRONG`.
+Discard that conclusion. Two reasons:
+
+1. **GIS buildings never call `outlineRoom`.** They are a bbox rect with
+   walls traced round the footprint polygon — a different code path.
+2. **The input is the §17 zigzag.** `room [199,221 26x15]` is a 390-square
+   bounding box containing a diagonal parallelogram of walls. Walls sit at
+   neither `ry+rh` nor `ry+rh-1`; the diagonal crosses both rows once. 24.1
+   vs 22.2, and 10.4 vs 14.6 flipping the other way, are two coin flips.
+
+**`roomgeom` has no margin test and no axis-alignment test, so it stated a
+confident conclusion from noise and nearly retired a correct convention.**
+A probe that cannot say "I don't know" manufactures findings. Both guards
+are in §15.
+
+### Room rects can exceed their building
+
+Independent of orientation: a bbox over a non-rectangular footprint marks
+~200 outdoor squares as members of `room`. Membership drives loot spawning
+and every A4 rule. The fix is the §17 constraint arriving from the other
+side — a room must be a union of rects covering interior squares only.
+
+### Vanilla `spawnpoints.lua` — CONFIRMED, and not what §7 said
+
+`$MAPS/Muldraugh, KY/spawnpoints.lua` is `posX`/`posY`/`posZ` only, no
+`worldX`/`worldY`, values in absolute world tiles:
+
+```
+cellX = posX / 256      localX = posX % 256
+```
+
+Verified: `posX=10770, posY=10271` -> cell 42_40, local 18,31 -> an interior
+carpet square inside `room 23 'livingroom' rect [14,31 5x6]`. All 21
+spawnpoints fall in cells 41-43 x 36-41, a coherent town block. Sets are
+`poor_houses` (10), `medium_houses` (5), `rich_houses` (3),
+`doctor_houses` (2), `police_station` (1), merged per profession.
+
+**Our write path emits the legacy `worldX`/`worldY` form and works
+(test 15), so the reader accepts both.** Likely `worldX` defaults to 0,
+making `posX` absolute. **UNVERIFIED** — confirm in the decompiler before
+switching `GisCells` to the absolute form. If it holds, the 300-tile
+conversion that caused the three-session spawn bug can be deleted outright.
+
+### The per-square room id is dead
+
+`room id: -1` on every interior square sampled — 3 squares, 3 rooms, 2
+cells. Room membership is derivable **only** from lotheader rects. Two
+consequences: A4 rules need a spatial index over `RoomDef` rects built per
+cell (the same index §17's snap needs), and `CellEditor` should not be
+writing a field vanilla ignores. Three samples is not a sweep; widen it
+when the rooms dump exists.
+
+### Smaller notes
+
+- **`LotHeader`'s class comment is stale.** It says the B42 trailer is
+  "deliberately left unparsed and exposed as raw bytes"; `readB42Meta`
+  parses it completely and `Probe lotheader` reports `0 unidentified
+  bytes`. Same drift class as the CHARTER problem, one level down.
+- **The §10 3-int32 room object records are in better shape than
+  UNVERIFIED implies.** The trailer fit `leftover = 1 + buildings +
+  roomRefs` across 4064 cells and consumes to zero remainder. That is
+  structural evidence for the record width; it still says nothing about
+  meaning (§4).
+- **`chunkGrid` is probably zombie density.** B41 reads
+  `(width/10)*(height/10)` into a field named `zombieDensity`; B42 reads
+  `byte[1024]` = 32x32 into `chunkGrid`, values 0..10. Same range, same
+  role, resolution moved to per-chunk. Test in §15.
+- **`unknown12`** in the B42 trailer is still unnamed.
+- **Objects carry four facings, walls two edges.** The chair at 42_40 16,33
+  has `Facing W` and a `chairW` flag. When §17 check 2 runs, scan `Facing`
+  across wall tiles specifically — if walls only ever take N/W while
+  objects take all four, that is the cleanest statement of the constraint
+  the data will give.
+- **`Probe` argument shapes are undocumented.** `lotheader` takes a file,
+  `square` and `roomgeom` take a media dir plus a map dir. Two commands
+  were run wrong this session for want of a usage line.
+- **`grep` is aliased to `ugrep`**, which is POSIX-strict. GNU `\|`
+  alternation matches LITERALLY and returns nothing. Two greps this session
+  silently reported "not found" for symbols that were present. Use `-e`
+  repeated, or `-E`. Same class as the `ls`/eza gotcha in §5.
+
+---
+
+## 19. Wall vocabulary, and four attempts at an alignment test
+
+### The wall orientation vocabulary — CONFIRMED (§17 check 2 closed)
+
+From `PaletteScan "$PZ/media" walls_exterior_house_01` and
+`--prop Facing`:
+
+| Flag | Role | `edgeOf` |
+|---|---|---|
+| `WallW` | west edge | WEST |
+| `WallN` | north edge | NORTH |
+| `WallNW` | corner, renders both segments on one square | BOTH |
+| `WallSE` | **pillar/post, owns no edge** (`PaintingType = pillar`) | NONE |
+| `WindowN/W`, `DoorWallN/W` | openings in a wall | NORTH / WEST |
+
+**No diagonal wall primitive exists in the tile vocabulary.** That is the
+strongest available evidence for §17's constraint — stronger than counting
+rooms, because it is a property of the art rather than of one town.
+
+`Facing` is an OBJECT property: N/S/E/W across ~6,200 tiles (the chair at
+42_40 16,33 has `Facing W`). No wall tile carries it, and no tile of any
+kind carries a diagonal facing. Objects have four facings; walls have two
+edges plus a corner and a post.
+
+**The A1 classifier audits clean.** `wallOn` requires `isStructuralWall`
+AND a matching `edgeOf`. `WallSE` returns NONE so pillars never counted;
+`WallNW` returns BOTH, which is correct; overlays are excluded by
+`isOverlay`. `edgeOf` reads declared `Wall*` flags rather than inferring,
+so it sidesteps the §11 `attachedN` trap by construction.
+
+**But `edgeOf` has a live bug.** Its final block falls back to
+`attachedN`/`attachedW` — the proxy the method's own comment warns about.
+Unreachable from `wallOn`, but `edgeOf` is public and A3 will call it on
+neighbours, where a grime overlay would report `Edge.NORTH`. Listed in §15
+as an A3 prerequisite.
+
+### The corpus sweep — `roomgeom --all`, 4065 cells, ~78s
+
+```
+rects:        152317 total
+   tested:     29928  (19.6%)
+   untestable 122384  (80.3%)   under 4 on a side
+   off-level:      5
+
+untestable rects by shorter side:   1: 46482   2: 45928   3: 29974
+```
+
+**The 80.3% is the important number, not the alignment result.** Vanilla
+rooms are decomposed into thin strips — 46,482 rects are 1 square wide.
+Any validation rule reasoning about a rect's interior is inapplicable to
+four-fifths of the corpus. **This constrains A4's design more than the
+orientation question does.** A4 must work at 1xN.
+
+Also: `prisoncells [193,203 5x54]` appears identically at z=0,1,2,3.
+Multi-storey rooms repeat per level, so "room with no exit" has to treat
+vertical connectivity separately from horizontal.
+
+### Four attempts at the alignment test
+
+Recorded in full so none is retried. The question: **is this rect's wall
+geometry expressible as a rectangle at all?**
+
+| # | Approach | Result |
+|---|---|---|
+| 1 | Fraction of interior rows carrying a wall, exclude above 25% | **674 false positives.** On a 4-wide rect one partition is 33%. Flagged bathrooms, halls, barns and printed "off-axis rooms exist in vanilla" |
+| 2 | Least-squares slope of per-row mean wall x; exclude slope~1, r2>=0.9 | **Cleared all 674 — and the known diagonal too.** The rect holds two parallel runs, so the per-row mean jumps (203, 220, 203) and r2 came out 0.227. Averaging destroyed the structure |
+| 3 | Concentration: fraction of walls on the two densest lines, exclude below 0.45, either axis | GIS caught at 0.19/0.20. Vanilla down to **53 false positives** |
+| 4 | Same, but require BOTH axes low (`&&` not `\|\|`) | **Pending.** Checked by hand against all 53 and all 3 GIS rooms; separates cleanly |
+
+Measured concentrations, before attempt 3 was written:
+
+| Shape | north | west |
+|---|---|---|
+| GIS diagonal `[199,221 26x15]` | 0.192 | 0.200 |
+| clean rect `weldingworkshop` | 1.000 | 1.000 |
+| rect + one partition (synthetic) | 1.000 | 0.667 |
+
+**Why attempt 4 should work.** Every one of the 53 survivors has one axis
+at or near 1.00 and the other low — `prisoncells` 0.30/1.00, `stable`
+1.00/0.38, `bathroom` 0.42/1.00. Partitions run parallel to one axis, so
+they can only spread walls along one axis. **A diagonal is low on both by
+construction** — all three GIS rooms are 0.19/0.20, 0.21/0.23, 0.43/0.29.
+
+**The lesson worth keeping.** Three of four attempts produced a confident
+printed conclusion from a broken measure, and two of those conclusions were
+about vanilla's properties. §4 says a test that cannot fail proves nothing;
+the corollary is that **a test which has never been run against a known
+positive AND a known negative has not been calibrated.** Attempt 3 was the
+first checked against both before shipping, and it was still wrong — but
+wrong in a diagnosable way, because the failures came with numbers.
+
+### Status of §17
+
+Check 2 (vocabulary) is CLOSED and supports the constraint. Check 1 (does
+vanilla ever go off-axis) is **still open**: the current best answer is no
+off-axis room among 29,928 testable rects, but that is 19.6% of the corpus
+and comes from a test that has been wrong three times. `FootprintSnap`
+should not be designed on it yet.
+
+---
+
+## 20. A2 scoping — the deletion is not wholesale
+
+A2's premise is intact. `genMapSquare` deletes and replaces TREE/BUSH/PLANT
+per tile on load (§9), so the ~7,800 authored trees are discarded whatever
+our code does. The chunk is still worth doing, and the proof is still
+"delete, regenerate, confirm nothing changes in game".
+
+What the call sites add, from `grep -rn -e TreeScatter -e TreePalette
+-e WorldGenOverride src/` on 2026-08-10:
+
+```
+GisCells.java:61        TreePalette.pick(ti, sprites)
+GisCells.java:63        TreeScatter.place(g, treePal, SEED)   -> treeAt
+GisCells.java:150-151   treeAt[gx][gy] pushed onto the square stack
+GisCells.java:220       writeWorldGenOverride(mapDir, cellsX, cellsY)
+BiomeMapWriter.java:74  TreeScatter.distanceToStructure(g)
+```
+
+**`BiomeMapWriter` depends on `TreeScatter.distanceToStructure`.** That is
+grid geometry — distance from each square to the nearest structure — not
+vegetation placement, and it is load-bearing for the biome map, which is
+what removed the visible seam (test 27). Deleting the class outright breaks
+the thing that most recently worked.
+
+So A2 is three separable pieces, only one of which is a deletion:
+
+1. **Delete `TreeScatter.place` and `TreePalette`**, and the `treeAt` write
+   at GisCells:150. Move `distanceToStructure` to a geometry helper first;
+   that move should be byte-identical on its own, which makes it a
+   separately provable step.
+2. **Stop writing `WorldGenOverride.lua`.** Independent of the above and
+   testable with no code change at all: delete the file from the generated
+   mod directory, load, compare. If nothing changes, the write goes.
+3. **Open question, not cleanup.** Biomes drive vegetation in
+   engine-generated terrain; we also write tree tiles into authored cells.
+   Do both target the same squares? If the engine populates authored cells
+   too, vegetation is being decided twice by different rules, and which one
+   wins is a behaviour question worth knowing before the editor authors
+   vegetation deliberately.
+
+**Proof mechanism for step 1**, unchanged from the charter: hash every
+generated file before and after.
+
+```fish
+find ~/Zomboid/mods/PZGisImport -type f | sort | xargs sha256sum > /tmp/before.sha
+# delete, rebuild, regenerate
+find ~/Zomboid/mods/PZGisImport -type f | sort | xargs sha256sum > /tmp/after.sha
+diff /tmp/before.sha /tmp/after.sha
+```
+
+**Prediction: the lotpacks differ** — the tree tiles really are written, so
+removing them changes our output. The claim under test is not "the bytes
+are identical" but "the loaded map is identical", which is why this one
+needs the in-game check rather than a hash alone. The hashes are still
+worth taking: they say *which* files changed, and anything other than the
+lotpacks changing would be a surprise worth chasing.
+
+**The `gisimport` command line is not recorded anywhere in this document.**
+It was needed twice this session and guessed wrong both times. Whoever runs
+A2 should paste the working invocation into §6.
