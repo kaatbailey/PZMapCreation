@@ -191,6 +191,8 @@ public final class GisCells {
                 totalOverlays += overlays;
 
                 String cellName = (ORIGIN_CELL_X + cx) + "_" + (ORIGIN_CELL_Y + cy);
+                writeChunkDensity(h, rects);
+
                 Files.write(mapDir.resolve(cellName + ".lotheader"), h.write());
                 Files.write(mapDir.resolve("world_" + cellName + ".lotpack"),
                         cell.writeLotPack());
@@ -391,4 +393,64 @@ public final class GisCells {
         Files.writeString(versioned.resolve("mod.info"), info);
         Files.deleteIfExists(modRoot.resolve("mod.info"));
     }
+
+    /**
+     * Zombie density, one byte per 8x8 chunk (LotHeader.GRID_BYTES = 32x32).
+     *
+     * CellData.blank leaves this zero-filled, and a zero grid means no
+     * zombies at all — which is why the generated map had none while vanilla
+     * ground right across the boundary did (STATE.md §22).
+     *
+     * Vanilla Muldraugh over 4,162,560 chunks:
+     *
+     *   0 -> 4,013,741   1 -> 47,276   2 -> 72,702   3 -> 17,993
+     *   4 ->     7,455   5 ->    448   6 ->    595   7 ->  1,579
+     *   8 ->        91   9 ->    140  (10 present)
+     *
+     * So 96.4% zero is NORMAL; the defect was having nothing else. 1, 2 and 3
+     * carry nearly all of the nonzero population, and 8/9/10 are about 0.005%
+     * of chunks, so this deliberately stays in the low range.
+     *
+     * Deliberately NOT sampling that histogram per chunk. It is a frequency
+     * measurement, and density clusters around habitation — reproducing the
+     * numbers while scattering them would be the same error as the ground
+     * palette (§21) and attachedN (§11). Frequency is not distribution.
+     *
+     * Rule: a chunk holding building tiles gets INSIDE, a chunk orthogonally
+     * adjacent to one gets ADJACENT, everything else stays 0. Crude, but it
+     * has vanilla's SHAPE rather than its histogram, and it is falsifiable in
+     * game: zombies should appear around our buildings and not in open
+     * country.
+     *
+     * @param rects building footprints clipped to this cell, cell-local
+     */
+    static final int DENSITY_INSIDE = 2, DENSITY_ADJACENT = 1;
+
+    static void writeChunkDensity(LotHeader h, List<int[]> rects) {
+        final int side = LotHeader.GRID_SIDE;          // 32
+        if (h.chunkGrid == null || h.chunkGrid.length != LotHeader.GRID_BYTES)
+            h.chunkGrid = new byte[LotHeader.GRID_BYTES];
+
+        boolean[] built = new boolean[LotHeader.GRID_BYTES];
+        for (int[] r : rects) {
+            int x0 = Math.max(0, r[0]), y0 = Math.max(0, r[1]);
+            int x1 = Math.min(255, r[0] + r[2] - 1), y1 = Math.min(255, r[1] + r[3] - 1);
+            for (int cx = x0 / 8; cx <= x1 / 8; cx++)
+                for (int cy = y0 / 8; cy <= y1 / 8; cy++)
+                    built[cy * side + cx] = true;
+        }
+
+        for (int cy = 0; cy < side; cy++) {
+            for (int cx = 0; cx < side; cx++) {
+                int i = cy * side + cx;
+                if (built[i]) { h.chunkGrid[i] = DENSITY_INSIDE; continue; }
+                boolean near = (cx > 0 && built[i - 1])
+                        || (cx < side - 1 && built[i + 1])
+                        || (cy > 0 && built[i - side])
+                        || (cy < side - 1 && built[i + side]);
+                if (near) h.chunkGrid[i] = DENSITY_ADJACENT;
+            }
+        }
+    }
+
 }

@@ -229,6 +229,25 @@ If `$MAPS` expands empty, a *global* shadows the universal. Diagnose with
 
 Two naming conventions in one directory, and a mismatch fails silently.
 
+### The two GIS commands
+
+Recovered from shell history three separate times on 2026-08-11 and
+guessed wrong twice before that. They are not interchangeable: `gisimport`
+writes a schematic PNG for eyeballing, `giscells` writes the actual mod.
+
+```fish
+java -cp out pzformat.Probe gisimport \
+    ~/pzgis/buildings.geojson ~/pzgis/roads.geojson ~/pzgis/area.geojson \
+    ~/pzgis
+
+java -cp out pzformat.Probe giscells \
+    ~/pzgis/buildings.geojson ~/pzgis/roads.geojson ~/pzgis/area.geojson \
+    "$PZ/media" ~/Zomboid/mods PZGisImport
+```
+
+Current dataset: 7 buildings (6 Residential, 1 Agriculture), 1 road,
+495x424 tiles, generating 2x2 cells at 200_200..201_201.
+
 ---
 
 ## 6. What already exists — do not rebuild
@@ -849,6 +868,8 @@ grep, found the callers, and wrongly concluded A2's premise was false. See
 | 42 | Observed zombie spawns at the map boundary | Zombies on vanilla ground, none on ours, boundary exactly where our road ends |
 | 43 | `survey` chunk grid histogram, vanilla | 0..10 present. 96.4% zero; 1/2/3 dominate the rest; 8/9/10 are ~0.005% |
 | 44 | `survey` chunk grid histogram, generated | **All 4096 bytes zero across all 4 cells** |
+| 45 | `writeChunkDensity`, then regenerate and survey | 0→3935 (96.1%), 1→89, 2→72. Predicted 40-70 twos and 80-150 ones before running |
+| 46 | Fresh world, walk to a generated building | **Zombies at the building, none on the way.** First ever seen on the generated map |
 
 ---
 
@@ -949,9 +970,19 @@ before writing anything.
 - [x] Test whether `chunkGrid` is zombie density: mean over a town cell vs a
       forest cell should differ sharply (§18)
       — **CONFIRMED 2026-08-11 by three independent lines (§22).**
-- [ ] **Write zombie density into `chunkGrid`.** Currently all zeros, which
+- [x] **Write zombie density into `chunkGrid`.** Currently all zeros, which
       is why our cells have no zombies. Must follow land use, not the
       vanilla histogram (§22)
+      — **done 2026-08-11, confirmed in game (§23). Mechanism proven;
+      calibration untested.**
+- [ ] Calibrate density values. 2 near buildings is at the low end of
+      vanilla's range and one hamlet is not a town (§23)
+- [ ] Should density vary by occupancy class? The import distinguishes
+      Agriculture from Residential and currently treats them alike (§23)
+- [ ] Measure how vanilla's nonzero density correlates with what a place
+      is — the recipe, not the histogram (§4, §23)
+- [ ] Read the biome map's town/edge/forest/deep classification as the
+      region signal for ground groups (§21, §23)
 - [ ] Room rects must cover interior squares only — a bbox over a
       non-rectangular footprint marks outdoor squares as room members (§18)
 - [ ] Road auto-tiling — corner, T-junction, end, edge by neighbour bitmask
@@ -1559,3 +1590,67 @@ It stops at tile names and does not print the chunk grid, though
 `LotHeader` parses it. The histogram above came from `Probe survey`, which
 takes ~90s on Muldraugh and prints nothing until it finishes when piped
 through `grep`.
+
+---
+
+## 23. Density written — the mechanism works
+
+`GisCells.writeChunkDensity`, added 2026-08-11. A chunk holding building
+tiles gets 2, a chunk orthogonally adjacent gets 1, everything else stays
+0. Footprints come from `buildingRects(g, ox, oy)`, already clipped to the
+cell, so the density write does not depend on the raster loop.
+
+### Predicted before running, from building geometry alone
+
+1530 building tiles over 8x8 chunks is ~24 chunks packed perfectly,
+realistically 40-70 once footprints straddle boundaries, each with up to
+four orthogonal neighbours. So: **40-70 twos, 80-150 ones, 95%+ zero.**
+
+```
+0 -> 3935  (96.1%)     1 -> 89     2 -> 72
+```
+
+**72 and 89, and 96.1% zero against vanilla's 96.4%** — a number not tuned
+for, since the rule was written from building geometry rather than from
+matching the histogram.
+
+### In game, fresh world
+
+**Zombies at the building, none on the way to it.** First ever seen on the
+generated map. Both halves held, including the negative one: they appear
+where we wrote 2 and are absent where we wrote 0.
+
+### What this does and does not establish
+
+**Confirmed:** `chunkGrid` gates zombie spawning, and writing nonzero
+values makes zombies appear at those chunks. The plumbing works.
+
+**Not established:** whether 2 is the right value. Vanilla's range runs to
+10 and seven buildings at density 2 is a hamlet, not a town. Three zombies
+is evidence the mechanism fires, not evidence the quantity is right.
+
+**Open, and worth a proper measurement:** how vanilla's nonzero values
+correlate with what a place is. §4 prefers the recipe to the output, so
+the engine's own spawn code is a better source than measuring Muldraugh —
+but Muldraugh at least says whether density tracks building footprints,
+road frontage, or something else. And the import already distinguishes
+`Agriculture` from `Residential`; a farm outbuilding and six houses
+probably should not carry identical density.
+
+### A region signal already exists
+
+From the `giscells` output:
+
+```
+town 17374, edge 28242, forest 77031, deep 87233, beyond-raster 52264
+```
+
+**The biome map already computes a four-class per-tile classification.**
+That is precisely the region signal §21 needs for ground groups and §22
+argued should be built once and shared. It exists, it is per tile, and
+`GroundPalette` does not read it.
+
+Whether those four classes map usefully onto grass dense / medium / light
+is untested — but reading an existing classification is a much smaller
+piece of work than building a noise field, and it should be ruled out
+first.
