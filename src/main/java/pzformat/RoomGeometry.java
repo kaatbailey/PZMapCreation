@@ -377,10 +377,11 @@ public final class RoomGeometry {
         a.northWalls = total(rowCounts);
         a.westWalls = total(colCounts);
 
-        // A line with almost no walls says nothing; only judge populated sides.
+        // A diagonal is low on BOTH axes; a partition is low on one. Require both,
+        // else prisoncells (0.30/1.00) and stables (1.00/0.38) false-positive.
         boolean nBad = a.northWalls >= MIN_WALLS_TO_JUDGE && a.northConc < MIN_CONCENTRATION;
         boolean wBad = a.westWalls >= MIN_WALLS_TO_JUDGE && a.westConc < MIN_CONCENTRATION;
-        a.aligned = !(nBad || wBad);
+        a.aligned = !(nBad && wBad);
         return a;
     }
 
