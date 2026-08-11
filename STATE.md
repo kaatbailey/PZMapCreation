@@ -800,6 +800,8 @@ Acting on any of these wastes real time.
 | GIS footprints can be rasterized at their real-world bearing | **FALSE.** Room rects are `x, y, w, h` with no rotation field; walls are N/W edges only. Off-axis footprints stair-step and their rooms do not register cleanly (§17). |
 | Vanilla `spawnpoints.lua` uses `worldX`/`worldY` plus 300-tile offsets | **FALSE for B42 retail.** Muldraugh's file has `posX`/`posY`/`posZ` only, as absolute world tiles. Our write path uses the legacy form and works, so the reader evidently accepts both (§18). |
 | A cell's per-square room id identifies the room | **FALSE.** `-1` on every interior square sampled. Membership comes from lotheader rects only (§18). |
+| A ground square is one base tile plus at most one overlay | **FALSE.** Vanilla stacks several base tiles per square at region boundaries — one square in 42_40 carries five. That stacking IS the blend mechanism (§24). |
+| Ground region choice tracks distance from habitation | **UNSUPPORTED.** Suggested by a town-vs-forest comparison, then not borne out by a fine transect. Region driver is still unknown (§24). |
 | Terrain continuity was the remaining boundary problem | **INCOMPLETE.** The biome map made terrain continuous; POPULATION was never addressed. Zombies spawn on vanilla ground and stop dead at our boundary (§22). |
 | Ground groups can be selected per square from their measured frequencies | **FALSE.** The 70/21/10 split across Muldraugh is a split BETWEEN regions, not within them. Vanilla shows 16/16 identical `Grass_Dark` in a row; ours changes three times in eight squares (§21). |
 | Dropping the dirt groups was the fix for scattered bare diamonds | **SYMPTOM ONLY.** The cause is the missing region layer. Dirt is correct ground for tracks and yards and should return once regions exist (§21). |
@@ -870,6 +872,8 @@ grep, found the callers, and wrongly concluded A2's premise was false. See
 | 44 | `survey` chunk grid histogram, generated | **All 4096 bytes zero across all 4 cells** |
 | 45 | `writeChunkDensity`, then regenerate and survey | 0→3935 (96.1%), 1→89, 2→72. Predicted 40-70 twos and 80-150 ones before running |
 | 46 | Fresh world, walk to a generated building | **Zombies at the building, none on the way.** First ever seen on the generated map |
+| 47 | 6 samples across vanilla town cell 42_40 | `Grass_Medium`, Sand, `Grass_Dark` — regions vary WITHIN a cell, contiguous at 40-tile spacing |
+| 48 | Fine transect x=100..140 in 42_40 | **Squares carrying up to five stacked ground tiles.** Not a clean region boundary |
 
 ---
 
@@ -983,6 +987,18 @@ before writing anything.
       is — the recipe, not the histogram (§4, §23)
 - [ ] Read the biome map's town/edge/forest/deep classification as the
       region signal for ground groups (§21, §23)
+      — **do not start here. The region driver is not known to be distance
+      from habitation (§24).**
+- [ ] **Ground blending investigation.** How does vanilla stack ground
+      tiles, and what decides which pairs blend? Prefer the recipe:
+      `blends_natural_01` naming and properties, and the engine code that
+      assembles ground squares at load. Measuring more of Muldraugh has
+      now produced three complicated hypotheses in one session (§24)
+- [ ] Identify what `Sand` represents mid-cell in 42_40 — parking, yard,
+      or shore. If land use rather than distance, the region design
+      changes again (§24)
+- [ ] Extract `BiomeMapWriter`'s distance banding into a reusable method.
+      Worth doing regardless: three consumers want a region signal (§24)
 - [ ] Room rects must cover interior squares only — a bbox over a
       non-rectangular footprint marks outdoor squares as room members (§18)
 - [ ] Road auto-tiling — corner, T-junction, end, edge by neighbour bitmask
@@ -1654,3 +1670,88 @@ Whether those four classes map usefully onto grass dense / medium / light
 is untested — but reading an existing classification is a much smaller
 piece of work than building a noise field, and it should be ruled out
 first.
+
+---
+
+## 24. Ground stacking — §21's model is incomplete
+
+### Regions vary within a cell
+
+Six samples across vanilla town cell 42_40 at y=200:
+
+```
+x= 20   Grass_Medium
+x= 60   Sand + Grass_Medium
+x=100   Sand
+x=140   Grass_Dark
+x=180   Grass_Dark
+x=220   Grass_Dark
+```
+
+Contiguous regions at 40-tile spacing, three materials in one cell. This
+kills the fallback that regions might be arbitrary hand-picked fields —
+there is structure. Forest cell 35_35 is uniformly `Grass_Dark` across
+every sample taken (§21).
+
+### But the driver is NOT distance from habitation
+
+That comparison suggested it: 42_40's houses are in the west (spawnpoints
+at local x 18-58) and `Grass_Medium` sits at x=20-60 with `Grass_Dark`
+from x=140 out. A fine transect does not bear it out:
+
+```
+x=100  Sand
+x=104  Sand
+x=108  Grass_Dark
+x=112  Grass_Medium + Grass_Dark x4      <- FIVE ground tiles
+x=116  Grass_Medium + Grass_Dark
+x=120  Grass_Medium + Grass_Dark
+x=124  Grass_Medium + Grass_Dark
+x=128  Grass_Dark
+x=132  Grass_Dark
+```
+
+The Medium band at 112-124 sits **inside** Dark, with Dark on both sides.
+That is not one region meeting another, and it is not a habitation
+gradient. It may be a path, a mown verge, or the blend around the Sand
+feature. Unknown.
+
+### The finding that matters: vanilla stacks ground tiles
+
+**A square can carry several base ground tiles, not one base plus at most
+one overlay.** x=112 carries five. This is the explanation for the
+"25 lines from 16 probes" thread left open in §21, and it is the blend
+mechanism — overlapping tiles from neighbouring regions soften the
+boundary.
+
+**So §21's model is incomplete.** Ground is region, then texture within
+the region, **then a blend layer of stacked tiles at boundaries.** We
+write exactly one base plus at most one overlay, so even with perfect
+regions our transitions would be hard-edged where vanilla's are soft.
+
+### Why the next step is the recipe, not more measurement
+
+Three hypotheses about ground were formed and complicated by data in a
+single session: per-square frequency (§21), distance banding, and now a
+clean region boundary. Each time the measurement was of **Muldraugh, a
+hand-authored town** — which §13 already warns against imitating.
+
+§4: *prefer the recipe to the output.* The blending logic lives in the
+engine or in TileZed's authoring behaviour, and reading it will settle in
+one pass what four transects have not. Two candidates:
+
+- `blends_natural_01` tile naming and properties — is there a convention
+  encoding which pairs blend, and in which direction?
+- The engine code that assembles ground squares at load.
+
+**Ground appearance matters** — it is currently the most immersion-breaking
+defect in the generated map — so this is a real chunk, not a curiosity.
+
+### Do not start from the biome bands
+
+§23 suggested reading `town/edge/forest/deep` as the region signal. That
+still may be worth doing, but it assumes the region driver is distance
+from structures, and this transect does not support that. Extracting the
+banding into a reusable method is worth doing regardless — three consumers
+want a region signal — but mapping grass groups onto it should wait for
+the investigation.
