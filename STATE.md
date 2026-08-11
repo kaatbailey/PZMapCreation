@@ -781,6 +781,9 @@ Acting on any of these wastes real time.
 | GIS footprints can be rasterized at their real-world bearing | **FALSE.** Room rects are `x, y, w, h` with no rotation field; walls are N/W edges only. Off-axis footprints stair-step and their rooms do not register cleanly (§17). |
 | Vanilla `spawnpoints.lua` uses `worldX`/`worldY` plus 300-tile offsets | **FALSE for B42 retail.** Muldraugh's file has `posX`/`posY`/`posZ` only, as absolute world tiles. Our write path uses the legacy form and works, so the reader evidently accepts both (§18). |
 | A cell's per-square room id identifies the room | **FALSE.** `-1` on every interior square sampled. Membership comes from lotheader rects only (§18). |
+| Terrain continuity was the remaining boundary problem | **INCOMPLETE.** The biome map made terrain continuous; POPULATION was never addressed. Zombies spawn on vanilla ground and stop dead at our boundary (§22). |
+| Ground groups can be selected per square from their measured frequencies | **FALSE.** The 70/21/10 split across Muldraugh is a split BETWEEN regions, not within them. Vanilla shows 16/16 identical `Grass_Dark` in a row; ours changes three times in eight squares (§21). |
+| Dropping the dirt groups was the fix for scattered bare diamonds | **SYMPTOM ONLY.** The cause is the missing region layer. Dirt is correct ground for tracks and yards and should return once regions exist (§21). |
 | Off-axis rooms exist in vanilla Muldraugh | **UNSUPPORTED — printed by a broken guard, twice.** Both times the alignment test was measuring interior partitions, not skew. Current best answer: no off-axis room found (§19). |
 | `alignment()` is a working prototype of A4's "expressible as a rect" rule | **OVERSTATED.** It took four attempts to stop false-positiving on vanilla, and it cannot test 80.3% of rects (§19). |
 | Cell 200_200 can test `outlineRoom` | **FALSE.** GIS buildings do not go through `outlineRoom`, and their bbox rects do not match their diagonal wall runs. The measurement is void, not negative (§18). |
@@ -838,6 +841,14 @@ grep, found the callers, and wrongly concluded A2's premise was false. See
 | 34 | Alignment sweep, attempt 1 (interior fraction) | 674 non-aligned. **All false positives** — bathrooms, halls, barns with one partition |
 | 35 | Alignment sweep, attempt 2 (slope of per-row mean) | 0 non-aligned, but also cleared the known diagonal. r2 0.227 |
 | 36 | Alignment sweep, attempt 3 (concentration) | GIS caught at 0.19/0.20; vanilla down to 53, still false positives |
+| 37 | Alignment sweep, attempt 4 (both axes required) | **0 non-aligned / 29,928 tested.** All 3 GIS diagonals still caught. §17 check 1 closed |
+| 38 | Load with `WorldGenOverride.lua` removed | **No seam, foliage flows cleanly across the boundary.** The file was doing no work (§21) |
+| 39 | 8 adjacent ground squares, generated 200_200 | Dark, Dark, Dark, **Light**, Dark, Dark, **Medium**, Medium — three changes in eight |
+| 40 | 16 adjacent ground squares, vanilla 35_35 | `Grass_Dark` 16/16. No alternation at all |
+| 41 | 16 samples spaced 16 apart across vanilla 35_35 | Grass region, then road, then a dirt region alternating `Dirt`/`Dirt_Grass` per square |
+| 42 | Observed zombie spawns at the map boundary | Zombies on vanilla ground, none on ours, boundary exactly where our road ends |
+| 43 | `survey` chunk grid histogram, vanilla | 0..10 present. 96.4% zero; 1/2/3 dominate the rest; 8/9/10 are ~0.005% |
+| 44 | `survey` chunk grid histogram, generated | **All 4096 bytes zero across all 4 cells** |
 
 ---
 
@@ -849,9 +860,19 @@ grep, found the callers, and wrongly concluded A2's premise was false. See
       — **done 2026-08-10, offsets correct (§18). A3, A4, A5 unblocked.**
 - [ ] Delete `TreeScatter` and `TreePalette`; the engine deletes their output
       — **not wholesale: `BiomeMapWriter` needs `distanceToStructure` (§20)**
-- [ ] Stop writing `WorldGenOverride.lua`; the biome map supersedes it
-      — testable with no code change: delete the file from the generated mod
-      directory and load (§20)
+- [x] Stop writing `WorldGenOverride.lua`; the biome map supersedes it
+      — **CONFIRMED 2026-08-11 in game: removed, no seam, foliage clean.**
+      Remove the write at `GisCells:220` and `writeWorldGenOverride` (§21)
+- [ ] **Ground region layer.** Group selection must be spatial, not per
+      square. Grass_Dark / Medium / Light are region distinctions, not
+      texture (§21)
+- [ ] Check whether the biome map already supplies the region signal before
+      building a noise field (§21)
+- [ ] Restore the dirt groups once regions exist; gate them to tracks and
+      yards rather than open country (§21)
+- [ ] Explain 25 output lines from 16 ground probes — some vanilla squares
+      carry two ground tiles, which the survey's "never more than one
+      overlay" result does not obviously allow (§21)
 - [ ] Open question surfaced by A2: do authored tree tiles and engine biome
       vegetation target the same squares? (§20)
 - [ ] Regenerate and confirm in game that nothing changes — that proves they
@@ -921,11 +942,16 @@ before writing anything.
       `walls_exterior_house_01` the pattern is `WallW, WallN, WallNW,
       WallSE` every 4, openings every 16. Wall-joining needs that structure;
       per-tile flags alone do not say corner-vs-end-vs-junction (§19)
-- [ ] Apply the `&&` fix to `alignment()` and rerun the sweep (§19)
+- [x] Apply the `&&` fix to `alignment()` and rerun the sweep (§19)
+      — **done 2026-08-11. 53 false positives to 0; §17 check 1 closed.**
 - [ ] Fix the stale class comment on `LotHeader` — it says the B42 trailer is
       left unparsed; `readB42Meta` parses all of it (§18)
-- [ ] Test whether `chunkGrid` is zombie density: mean over a town cell vs a
+- [x] Test whether `chunkGrid` is zombie density: mean over a town cell vs a
       forest cell should differ sharply (§18)
+      — **CONFIRMED 2026-08-11 by three independent lines (§22).**
+- [ ] **Write zombie density into `chunkGrid`.** Currently all zeros, which
+      is why our cells have no zombies. Must follow land use, not the
+      vanilla histogram (§22)
 - [ ] Room rects must cover interior squares only — a bbox over a
       non-rectangular footprint marks outdoor squares as room members (§18)
 - [ ] Road auto-tiling — corner, T-junction, end, edge by neighbour bitmask
@@ -1248,7 +1274,12 @@ geometry expressible as a rectangle at all?**
 | 1 | Fraction of interior rows carrying a wall, exclude above 25% | **674 false positives.** On a 4-wide rect one partition is 33%. Flagged bathrooms, halls, barns and printed "off-axis rooms exist in vanilla" |
 | 2 | Least-squares slope of per-row mean wall x; exclude slope~1, r2>=0.9 | **Cleared all 674 — and the known diagonal too.** The rect holds two parallel runs, so the per-row mean jumps (203, 220, 203) and r2 came out 0.227. Averaging destroyed the structure |
 | 3 | Concentration: fraction of walls on the two densest lines, exclude below 0.45, either axis | GIS caught at 0.19/0.20. Vanilla down to **53 false positives** |
-| 4 | Same, but require BOTH axes low (`&&` not `\|\|`) | **Pending.** Checked by hand against all 53 and all 3 GIS rooms; separates cleanly |
+| 4 | Same, but require BOTH axes low (`&&` not `\|\|`) | **CONFIRMED 2026-08-11.** 0 non-aligned across 29,928 testable rects; all 3 GIS diagonals still caught |
+
+**Attempt 4 is the first version to pass both calibration cases at once** —
+the known positive is caught and every known negative is clear. Attempts 1,
+2 and 3 each failed one side. The rule it encodes: *a diagonal spreads walls
+across every line on both axes; a partition spreads on one axis only.*
 
 Measured concentrations, before attempt 3 was written:
 
@@ -1279,6 +1310,26 @@ vanilla ever go off-axis) is **still open**: the current best answer is no
 off-axis room among 29,928 testable rects, but that is 19.6% of the corpus
 and comes from a test that has been wrong three times. `FootprintSnap`
 should not be designed on it yet.
+
+**UPDATE 2026-08-11 — check 1 CLOSED, with a stated limit.** Attempt 4
+returns 0 non-aligned across 29,928 testable rects while still catching all
+three known GIS diagonals, so the test is calibrated on both sides rather
+than only one.
+
+The limit is real and should be quoted alongside the result: **the finding
+covers 19.6% of rects.** The other 80.3% are untestable because they are
+under 4 on a side, not because they are suspect — a 1-wide rect has no
+interior for walls to spread across, so "expressible as a rect" is close to
+vacuous there.
+
+**Two independent lines now agree**, which is what §4 asks for: no vanilla
+room is off-axis among testable rects, and no diagonal wall primitive
+exists in the tile vocabulary at all (§19). The second covers the whole
+corpus rather than a fifth of it, and is the stronger of the two.
+
+**Conclusion for design: `FootprintSnap` should refuse off-axis footprints,
+not warn.** The earlier "warn, not refuse" recommendation came from the
+broken guard and is retracted (§13).
 
 ---
 
@@ -1342,3 +1393,169 @@ lotpacks changing would be a surprise worth chasing.
 **The `gisimport` command line is not recorded anywhere in this document.**
 It was needed twice this session and guessed wrong both times. Whoever runs
 A2 should paste the working invocation into §6.
+
+---
+
+## 21. Ground is regions, not a per-square mix
+
+### A2 step 2 — CONFIRMED, `WorldGenOverride.lua` does nothing
+
+Moved out of the generated mod directory, loaded in game 2026-08-11.
+**No seam. Foliage flows cleanly across the boundary between authored cells
+and engine-generated land** — dense mixed forest on one side, open grass
+with saplings on the other, trees crossing coherently. The biome map is
+doing that work. Remove the write.
+
+Incidental confirmation for A2 step 1: the trees look right, and they are
+the engine's, not ours. `genMapSquare` deleted our authored trees and
+generated its own from the biome map — which is the claim the deletion
+rests on.
+
+### The ground defect, and what causes it
+
+Generated ground reads as scattered tan diamonds in green grass. Probing
+eight adjacent squares in generated 200_200:
+
+```
+Grass_Dark, Grass_Dark, Grass_Dark, Grass_Light,
+Grass_Dark, Grass_Dark, Grass_Medium, Grass_Medium
+```
+
+Sixteen adjacent squares in vanilla 35_35: **`Grass_Dark`, all sixteen.**
+No alternation whatsoever.
+
+Sixteen samples spaced 16 apart across the same vanilla row: a long grass
+region, a `Road_04` crossing, then a dirt region alternating `Dirt` and
+`Dirt_Grass` square by square.
+
+**So vanilla ground is two-level, and `GroundPalette` collapses it into
+one:**
+
+1. **Region** decides the ground TYPE — grass here, dirt there, road there.
+   Large-scale, coherent, driven by what the place is.
+2. **Within a region**, mix a small set of tiles that belong together:
+   `Dirt` with `Dirt_Grass` to make a worn unpaved surface, or the four
+   interchangeable variants of one grass colour.
+
+`Grass_Dark`, `Grass_Medium` and `Grass_Light` are **level-1 distinctions.**
+We are treating them as level-2 texture. That is backwards, and it is why
+generated ground reads as noise.
+
+### Why the survey did not catch it
+
+The Muldraugh survey measured how OFTEN each group appears — 70 / 21 / 10 —
+and reproduced those proportions faithfully, per square. It never measured
+how they are ARRANGED. A 14.5% share can be 14.5% scattered uniformly or
+14.5% in coherent regions, and those look nothing alike.
+
+**Same failure shape as §4's round-trip caveat and the §11 `attachedN`
+bug: a measurement that validates in aggregate while being wrong about the
+thing that matters.** Frequency is not distribution.
+
+### Consequence: the dirt groups should come back
+
+Test 27 dropped `dirt` (64/69/70/71) and `dirt_grass` (80/85/86/87) because
+they read as bare diamonds scattered through forest. That fixed the symptom
+correctly, but the cause was the same one-level collapse — and
+`GroundPalette`'s own comment already said so: *"Dirt is still the right
+floor for a track, a yard or an unpaved road. It just should not be
+scattered through open country at random."*
+
+Vanilla confirms it: the dirt region in 35_35 alternates `Dirt` with
+`Dirt_Grass` per square, exactly the level-2 mix. Once regions exist, dirt
+returns and unpaved tracks and yards become possible — a capability the
+current palette gave up.
+
+### Before building a noise field
+
+**Check whether the region signal already exists.** The biome map drives
+vegetation and removed the seam; if biome type predicts ground group, the
+region layer is already there and unread, and the fix is a lookup rather
+than new noise. Falsifier: sample ground material against biome across a
+vanilla cell and see whether they correlate.
+
+Only if they do not is a value-noise field over world coordinates the right
+approach — selecting the GROUP at a scale of roughly 8-20 squares, with
+uniform choice among the four variants within a group, which is genuinely
+per-square. Overlays can stay per-square; they read as texture, not colour.
+Either way the measured proportions are preserved exactly.
+
+### Loose thread
+
+Sixteen ground probes on vanilla 35_35 produced 25 `FloorMaterial` lines.
+Some squares carry two ground tiles. The survey recorded that no square out
+of 257,703 had two overlays; a stacked BASE is a different claim and is not
+obviously allowed by it. Unexplained.
+
+---
+
+## 22. `chunkGrid` is zombie density — CONFIRMED, and ours is empty
+
+### The evidence, three independent lines
+
+1. **Structural.** B41 reads `(width/10)*(height/10)` bytes into a field
+   the legacy format literally names `zombieDensity`. B42 reads
+   `byte[1024]` = 32x32 into `chunkGrid`. Same role, resolution moved from
+   per-10-tiles to per-chunk.
+2. **Value range.** Vanilla uses 0..10, matching the B41 field.
+3. **Behavioural, 2026-08-11.** Zombies spawn on vanilla ground and none
+   spawn on ours. The boundary sits exactly where our authored road ends.
+   **This is the independent source §4 asks for — not more testing of the
+   same kind.**
+
+### The distributions
+
+```
+vanilla Muldraugh, 4,162,560 chunks:
+  0 -> 4,013,741    1 -> 47,276    2 -> 72,702    3 -> 17,993
+  4 ->     7,455    5 ->    448    6 ->    595    7 ->  1,579
+  8 ->        91    9 ->    140   (10 present)
+
+generated PZGisImport, 4,096 chunks:
+  0 -> 4,096        (every byte, all four cells)
+```
+
+**96.4% of vanilla chunks are zero, so a zero-heavy map is normal.** The
+defect is not that we have zeros; it is that we have nothing else. And the
+nonzero values are far from uniform — 1, 2 and 3 carry most of the
+population while 8, 9 and 10 together are about 0.005% of chunks. Anything
+that writes these must not spread values evenly across the range.
+
+### The trap, which is the same one as §21
+
+That histogram is a **frequency** measurement. Reproducing it by rolling
+per chunk would get the numbers right and the arrangement wrong — density
+clusters around habitation, and a town cell and a forest cell are not two
+samples from one distribution. **Frequency is not distribution**; this is
+the third time that error has appeared in this project (§11 `attachedN`,
+§21 ground groups, here).
+
+### Three consumers now want the same thing
+
+- **Ground groups** need to know whether a place is grass, dirt or road
+  (§21).
+- **Zombie density** needs to know whether a place is inhabited (§22).
+- **The biome/zone map** already encodes something close to this and is
+  written per tile (§6).
+
+All three are asking *what is this place*, and **GIS land use already
+answers it** — parks, fields, residential, industrial — from real data
+rather than invented noise. That is a strong argument for building the
+region layer once, as shared infrastructure, rather than solving ground and
+density separately.
+
+It is also the §2 test passing cleanly: a GIS feature that the editor needs
+regardless of who authors the tiles.
+
+### Testing a fix
+
+Unusually clean: write plausible density, regenerate, walk the same
+boundary, see whether zombies appear on our side. **Use a fresh world** —
+a resumed save may have baked spawn data for chunks it has already seen.
+
+### Note on `Probe lotheader`
+
+It stops at tile names and does not print the chunk grid, though
+`LotHeader` parses it. The histogram above came from `Probe survey`, which
+takes ~90s on Muldraugh and prints nothing until it finishes when piped
+through `grep`.
