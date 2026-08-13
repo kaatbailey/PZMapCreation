@@ -156,6 +156,10 @@ source, never by more testing of the same kind.**
   An underdetermined linear system is trivially consistent.
 - **Report rates over the population that can discriminate.** A 67.63% floor
   from trivially-empty files made noise look like signal for two sessions.
+- **Sample spatial data contiguously.** A strided sample can alias. A 4-tile
+  transect through a dithered ground boundary returned four identical
+  materials in a row and was read as a region band; the contiguous row is
+  `M D M D M M M D D`. Two ground transects were wrong this way (§26).
 - **Change one thing per test.**
 - **The renderer is a hypothesis too.** It has been wrong twice. When the
   picture looks wrong, the picture may be what is wrong.
@@ -800,8 +804,9 @@ Acting on any of these wastes real time.
 | GIS footprints can be rasterized at their real-world bearing | **FALSE.** Room rects are `x, y, w, h` with no rotation field; walls are N/W edges only. Off-axis footprints stair-step and their rooms do not register cleanly (§17). |
 | Vanilla `spawnpoints.lua` uses `worldX`/`worldY` plus 300-tile offsets | **FALSE for B42 retail.** Muldraugh's file has `posX`/`posY`/`posZ` only, as absolute world tiles. Our write path uses the legacy form and works, so the reader evidently accepts both (§18). |
 | A cell's per-square room id identifies the room | **FALSE.** `-1` on every interior square sampled. Membership comes from lotheader rects only (§18). |
-| A ground square is one base tile plus at most one overlay | **FALSE.** Vanilla stacks several base tiles per square at region boundaries — one square in 42_40 carries five. That stacking IS the blend mechanism (§24). |
-| Ground region choice tracks distance from habitation | **UNSUPPORTED.** Suggested by a town-vs-forest comparison, then not borne out by a fine transect. Region driver is still unknown (§24). |
+| The trees visible on the generated map are the engine's | **UNPROVEN, and evidence points the other way.** WorldGen skips chunks with no empty squares, and GisCells fills every square; our tree tiles are present in the lotpack. A2 step 1 is blocked until settled (§25). |
+| A ground square is one base tile plus at most one overlay | **FALSE.** Vanilla stacks several base tiles per square at region boundaries — one square in 42_40 carries five. That stacking IS the blend mechanism (§24). The verdict stands but **the reason stated here is itself wrong**: a square carries exactly one solid tile. The others are mask tiles with `FloorOverlay` (§26). |
+| Ground region choice tracks distance from habitation | **UNSUPPORTED.** Suggested by a town-vs-forest comparison, then not borne out by a fine transect. Region driver is still unknown (§24). **Still unsupported, but the fine transect no longer counts against it** — it was an aliasing artifact (§26). Nothing supports it either. For authored cells the driver is a human painting land use; for us it is GIS land use. |
 | Terrain continuity was the remaining boundary problem | **INCOMPLETE.** The biome map made terrain continuous; POPULATION was never addressed. Zombies spawn on vanilla ground and stop dead at our boundary (§22). |
 | Ground groups can be selected per square from their measured frequencies | **FALSE.** The 70/21/10 split across Muldraugh is a split BETWEEN regions, not within them. Vanilla shows 16/16 identical `Grass_Dark` in a row; ours changes three times in eight squares (§21). |
 | Dropping the dirt groups was the fix for scattered bare diamonds | **SYMPTOM ONLY.** The cause is the missing region layer. Dirt is correct ground for tracks and yards and should return once regions exist (§21). |
@@ -809,6 +814,11 @@ Acting on any of these wastes real time.
 | `alignment()` is a working prototype of A4's "expressible as a rect" rule | **OVERSTATED.** It took four attempts to stop false-positiving on vanilla, and it cannot test 80.3% of rects (§19). |
 | Cell 200_200 can test `outlineRoom` | **FALSE.** GIS buildings do not go through `outlineRoom`, and their bbox rects do not match their diagonal wall runs. The measurement is void, not negative (§18). |
 | Multi-user editing is a reason to prefer a Spring Boot + WebGL UI | **SUPERSEDED.** CHARTER §3, 2026-08-08: no multi-user concurrent editing. The UI fork stays open on other grounds. |
+| A `Grass_Medium` band sits at x=112–124 in 42_40 inside `Grass_Dark`, with Dark on both sides | **FALSE — sampling artifact.** A 4-tile stride aliased a dithered boundary. There is no band (§26). |
+| Filtering ground samples on `FloorMaterial` measures regions | **FALSE.** Mask tiles carry `FloorMaterial` too. Filter on `solidfloor`. This flaw is behind three of the four ground transects and behind §21's unexplained "25 `FloorMaterial` lines from 16 probes" (§26). |
+| The biome map is what removed the map-edge seam | **INCOMPLETE.** `Blending.changeGround` feathers solid tiles 0–3 squares in from any edge shared with a procedural chunk. A second mechanism is doing visible work there (§26). |
+| `GroundSurvey`'s "never more than one overlay, 0 of 257,703" describes ground stacking | **MEASURED THE TUFT LAYER ONLY.** True of `blends_grassoverlays_01`; it never counted mask tiles, which live on the base sheet (§26). |
+| The engine will blend our authored ground at load | **FALSE.** `Blending.applyBlending` fires only where a chunk borders a **procedural** chunk, and it replaces solid tiles rather than writing masks. Every mask must be authored (§26). |
 
 Known-stale, not yet cleaned up: `TreeScatter` / `TreePalette` still place
 ~7,800 trees the engine deletes; `WorldGenOverride.lua` is still written and is
@@ -885,6 +895,10 @@ grep, found the callers, and wrongly concluded A2's premise was false. See
       — **done 2026-08-10, offsets correct (§18). A3, A4, A5 unblocked.**
 - [ ] Delete `TreeScatter` and `TreePalette`; the engine deletes their output
       — **not wholesale: `BiomeMapWriter` needs `distanceToStructure` (§20)**
+      — **BLOCKED. Do not start. Tree ownership is unresolved (§25).**
+- [ ] **Settle tree ownership.** Walk a line of known authored tree
+      positions in game and see whether trees stand at exactly those
+      coordinates. Unblocks or kills A2 step 1 (§25)
 - [x] Stop writing `WorldGenOverride.lua`; the biome map supersedes it
       — **CONFIRMED 2026-08-11 in game: removed, no seam, foliage clean.**
       Remove the write at `GisCells:220` and `writeWorldGenOverride` (§21)
@@ -1458,6 +1472,11 @@ the engine's, not ours. `genMapSquare` deleted our authored trees and
 generated its own from the biome map — which is the claim the deletion
 rests on.
 
+**RETRACTED, same day. This paragraph is wrong, or at least unproven —
+see §25.** It was written before `BiomeMapWriter`'s scope note was read and
+before the generated cell was probed for tree tiles. Both point the other
+way. A2 step 1 is BLOCKED, not ready.
+
 ### The ground defect, and what causes it
 
 Generated ground reads as scattered tan diamonds in green grass. Probing
@@ -1747,6 +1766,68 @@ one pass what four transects have not. Two candidates:
 **Ground appearance matters** — it is currently the most immersion-breaking
 defect in the generated map — so this is a real chunk, not a curiosity.
 
+## 25. Tree ownership — UNRESOLVED, and it blocks A2 step 1
+
+A2 step 1 rests on the claim that the engine discards our authored trees.
+**That claim is not established, and two findings point against it.**
+
+### Evidence for (the original basis)
+
+§9: `genMapSquare` deletes and replaces TREE/BUSH/PLANT per tile on load.
+§11: the engine substitutes species and appearance for the generic
+`vegetation_trees_01_*` tiles, so varied beautiful trees in game are
+compatible with our writing generic ones.
+
+### Evidence against
+
+1. **`BiomeMapWriter`'s own scope note**, added when that class was
+   written: *"WorldGen only generates chunks where
+   `IsoChunk.hasEmptySquaresOnLevelZero()` is true. Since GisCells fills
+   every square of every chunk, none of ours are generated, so the BIOME
+   band may currently do nothing for us."* If WorldGen never runs on our
+   chunks, it never places trees on them either.
+2. **Our tree tiles are in the file.** `Probe findprop ... 200_200 tree`
+   returns `vegetation_trees_01_8 / _10 / _11` with `tree 2`, at authored
+   positions. `TreeScatter` wrote 7,797 trees and they are on disk.
+
+These are not necessarily contradictory — `genMapSquare` and WorldGen
+chunk generation are different mechanisms, and one could run while the
+other does not. That ambiguity is exactly what `BiomeMapWriter` flags as
+UNVERIFIED.
+
+### The test, which was started and not finished
+
+**Positional.** Pick authored tree squares away from the cell edge, convert
+to world coordinates, walk that line in game.
+
+- Trees at exactly those coordinates, bare ground between → **positions are
+  ours.** `TreeScatter` is live and A2 step 1 must not proceed.
+- Trees along the line at unrelated positions → **the engine re-scatters.**
+  A2 step 1 stands.
+- Dense forest everywhere → the engine is adding on top of ours, and a
+  different test is needed.
+
+A first attempt used cell 200_200 local x=0, which is world x=51200 and sits
+on the map edge — not usable. Pick interior squares (local x roughly
+120-180) instead.
+
+```fish
+java -cp out pzformat.Probe findprop "$PZ/media" \
+    ~/Zomboid/mods/PZGisImport/common/media/maps/PZGisImport 200_200 tree
+```
+
+World coordinate for cell 200_200 local (x,y) is (51200 + x, 51200 + y).
+
+### Density in the screenshots is a hint, not evidence
+
+7,797 trees over four cells is about 3% of squares. The forest in the
+2026-08-11 screenshots looks considerably denser than 3%, which would
+suggest the engine is adding trees rather than only substituting art for
+ours. Not conclusive — canopy sprites overlap and hide bare ground — but
+worth holding in mind when the positional test is run.
+
+---
+
 ### Do not start from the biome bands
 
 §23 suggested reading `town/edge/forest/deep` as the region signal. That
@@ -1755,3 +1836,183 @@ from structures, and this transect does not support that. Extracting the
 banding into a reusable method is worth doing regardless — three consumers
 want a region signal — but mapping grass groups onto it should wait for
 the investigation.
+
+---
+
+## 26. Ground blending — CONFIRMED mechanism, and the rule
+
+E3, 2026-08-13. Full document: `docs/E3_GROUND_BLENDING.md`. Deliverable was a
+document; no code was changed. This section is the summary a future session
+needs; the document carries the falsifiers and the unrun checks.
+
+### Three layers, and a naming trap
+
+| Layer | Tileset | Flags | Per square |
+|---|---|---|---|
+| **solid** | `blends_natural_01`, `blends_street_01` | `solidfloor`, `diamondFloor` | exactly 1 |
+| **mask** | same sheets | `FloorOverlay`, `IsFloorAttached`, `FloorAttachment{N,S,E,W}` | 0–4 |
+| **tuft** | `blends_grassoverlays_01` | `vegitation`, `MoveWithWind` | 0–1 |
+
+`GroundPalette` calls the **tuft** layer "overlay" (`OVERLAY_SHEET`,
+`Ground(base, overlay)`, `overlayRate`) and has never written a mask. Use
+**solid / mask / tuft**; "overlay" is now ambiguous and will cause a
+misimplementation.
+
+Stack order is solid first, masks after, tuft last — CONFIRMED on ~60 squares
+across two tilesets. `getFloor()` returns the first floor object and
+`cleanChunk` reads `FloorMaterial` off it, so a mask written first would be
+mistaken for the floor.
+
+### The 16-tile block contract — CONFIRMED
+
+Source: `PaletteScan "$PZ/media" blends_natural_01`, all 160 indices. Uniform
+across all seven materials. For block base **B**:
+
+| offset | role |
+|---|---|
+| B+0, B+5, B+6, B+7 | solid variants, interchangeable |
+| B+1 / B+2 / B+3 / B+4 | corner masks N+W / E+S / S+W / E+N |
+| B+8 … B+11 | side masks N / W / E / S |
+| B+12 … B+15 | side masks N / W / E / S, second variant |
+
+B = 0 `Sand`, 16 `Grass_Dark`, 32 `Grass_Medium`, 48 `Grass_Light`, 64 `Dirt`,
+80 `Dirt_Grass`, 96 `Clay`. Indices 112–127 are a further side-mask set with no
+solids; 128–159 have no sprites — UNVERIFIED what they belong to. Block
+regularity does **not** continue past 111.
+
+`blends_street_01` follows the same contract: (90,190) is `_53` `Road_04` solid
+with `_26` (E) and `_25` (W) `Road_02` masks.
+
+Convention throughout: **+x East, +y South**, matching §10.
+
+### The mask rule — CONFIRMED
+
+Source: contiguous 9×5 rectangle, 42_40, x=110–118 y=198–202. 45 squares,
+21 masks, every one checked against its actual neighbours; none unexplained.
+
+A square carries masks drawn from its **neighbour's** block. The mask names the
+direction the other material lies in. With S = the set of orthogonal directions
+whose neighbour carries the higher-priority material:
+
+| \|S\| | encoding |
+|---|---|
+| 0 | no mask |
+| 1 | one side tile |
+| 2, adjacent | **one corner tile** — not two side tiles |
+| 2, opposite | two side tiles |
+| 3 | two corner tiles, sharing the middle direction |
+| 4 | four corner tiles |
+
+Side masks have two interchangeable variants; vanilla uses both on identical
+geometry, so pick at random exactly as the four solid variants are picked.
+
+UNVERIFIED: the multi-material case (no square measured bordered two different
+higher-priority materials); the |S|=3 case rests on one sample.
+
+### Blending is one-way — there is a precedence table
+
+Not one `Grass_Dark` base square in the rectangle carries a mask. All 21 masks
+are Dark-on-Medium, and the relation is not reciprocal. The higher-priority
+material is drawn as a mask **onto** its neighbour.
+
+Known: `Grass_Dark` > `Grass_Medium` (21 samples) · `Grass_Medium` > `Sand`
+((60,200)) · `Road_02` > `Road_04` ((90,190)).
+
+It is **not** block-index order — Sand is block 0 and loses to Medium at 32 —
+so it must be measured. Three of twenty-one `blends_natural_01` pairs known.
+UNVERIFIED whether masks cross tilesets at all.
+
+### Region boundaries are dithered
+
+Base materials, 42_40, D = `Grass_Dark`, M = `Grass_Medium`:
+
+```
+x:      110 111 112 113 114 115 116 117 118
+y=198:   D   D   D   D   D   M   M   M   M
+y=199:   M   M   D   D   D   M   M   D   M
+y=200:   M   D   M   D   M   M   M   D   D
+y=201:   M   M   D   M   M   M   M   D   D
+y=202:   M   M   D   M   M   M   M   M   D
+```
+
+The two materials interpenetrate per square across 2–4 squares. Interiors stay
+pure — §21's 16/16 identical `Grass_Dark` in 35_35 still holds. So the model is
+**region → texture (variant choice) → dither (at boundaries) → mask**. Layers 3
+and 4 are separate and both are needed: dither without masks is the
+scattered-diamond defect at region scale; masks without dither gives a soft but
+geometrically straight edge.
+
+UNVERIFIED that dither is a convention rather than a 42_40 hand-painting quirk.
+**Check before implementing it:** a contiguous rectangle across a region
+boundary in a non-town cell.
+
+### The engine's blending pass touches only the procedural seam
+
+`zombie.iso.worldgen.blending.Blending`, called from `IsoChunk.update()`. The
+gate is `!blendingDoneFull && !Arrays.equals(blendingModified, {t,t,t,t})`,
+which opens on authored chunks — but the per-direction work is guarded by
+`sourceChunk.isBlendingDoneFull()`, set true only in `genRandomChunk`. **So the
+neighbour must be a fully procedural chunk.** Between two authored chunks
+nothing happens.
+
+`changeGround` replaces the solid floor with `tiles().get(0)` from the
+neighbouring biome's GROUND feature, random depth 0–3 inward, along each of the
+8 columns of the shared edge — a ragged feathering pass, not masking.
+`maxDepth = 4` is a dead constant. `BlendDirection.defaultDepth` (N 7, S 0,
+W 7, E 0) are min/max seeds for `genRandomSquare`, not a blend radius.
+
+Consequences: we author every mask ourselves; the
+`contains("blends_natural_01")` guard means our roads and building floors are
+immune to seam replacement while our natural ground is not.
+
+### WorldGen can only place solid tiles
+
+`grep -rho -e 'blends_natural_01_[0-9][0-9]*' "$PZ/media/lua/" | sort -u`
+returns 28 tiles, every one a solid. **No mask tile appears in any Lua file.**
+The producers partition cleanly: features place solids, `Blending` replaces
+solids, only the authoring tool writes masks.
+
+### `Sand` mid-cell is land use — Q4 answered
+
+(60,200) is Sand solid carrying `fencing_01_59`, inside room 78
+`emptyoutside` rect [53,199 8×12]. North of it: `Road_04` at (90,190), and a
+`shed` room at [89,177 3×4]. Fenced open ground between a road and a shed — a
+yard or lot.
+
+This strengthens §22: land use is what GIS import already knows, and
+`emptyoutside` rooms and fence tiles are co-located with it. UNVERIFIED that it
+generalises; one parcel is not a rule.
+
+### Dirt can come back — Q5 answered
+
+`dirt` and `dirt_grass` have full 16-tile blocks with the same mask vocabulary.
+Vanilla alternating `Dirt`/`Dirt_Grass` per square in 35_35 is the texture layer
+behaving normally. The test-27 objection stands as an argument against
+*scattering*, not against dirt: gated to tracks, yards and unpaved roads, being
+bare is correct.
+
+### What to implement, in dependency order
+
+1. A material **priority table**. Blocks everything; three pairs known.
+2. A **region layer** from GIS land use, pure interiors.
+3. A **dither pass**, 2–4 squares — after running its falsifier.
+4. A **mask pass**, after every square's material is final. It is a pure
+   function of the four orthogonal neighbours, which is the same shape as the
+   editor's auto wall-joining (Charter §1). Worth writing once for both.
+5. Restore **dirt**, gated to yard/track regions.
+6. Keep the tuft layer; only its naming needs changing.
+
+Two traps: mask tiles must be declared in the `.lotheader` tile table
+(`GroundPalette.all` collects solids and tufts only), and the mask pass cannot
+be folded into the per-square roll in `GroundPalette.roll()` because a square's
+masks depend on its neighbours.
+
+### Noticed, out of scope
+
+`Blending.removeTrees` is a **fourth** mechanism touching trees: along an edge
+shared with a procedural chunk it deletes trees with probability ramping by
+distance from the edge (`rnd.nextInt(100) >= y*10` — certain at the edge,
+impossible beyond 10 squares) and substitutes `e_newgrass_1_40` or
+`e_newgrass_1_42` about 75% of the time. This bears on §25: authored trees near
+the map edge may be deleted by this pass rather than by `genMapSquare`, which
+would confound the positional test if it is run too close to the boundary.
