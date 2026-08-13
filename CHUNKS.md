@@ -110,7 +110,13 @@ order is now:
 than a fourth hypothesis, and left one measurement blocking everything
 downstream: the material priority table. The order is now:
 
-**E7 → A2-gate → B1 → B2 → C1**, with A3-pre1/pre2 and E6 available as small
+**AMENDED 2026-08-13.** E7 is closed. Three investigation chunks have run
+back to back and nothing on the generated map has changed yet; the defect that
+started this — ground reading as scattered tan diamonds — is fully diagnosed
+and still present. E8 therefore builds, opening with the one measurement E7
+left rather than deferring it to a fourth document chunk. The order is now:
+
+**E8 → E9 → A2-gate → B1 → B2 → C1**, with A3-pre1/pre2 and E6 available as small
 fillers at any point.
 
 **E3 first** because ground appearance is the most immersion-breaking defect
@@ -752,6 +758,97 @@ store chosen. Shapes only:
 
 ---
 
+## E8 — Region layer, and the dither law
+
+**This chunk builds.** E3 and E7 were documents; three investigation chunks in
+a row is enough, and the defect that started this is still on the map. E8 ends
+with regions and dither actually written and a rendered before/after.
+
+**Read first:** STATE §26 and §27, and `docs/E7_GROUND_PRECEDENCE.md`. The
+priority table is CONFIRMED — **do not re-measure it.**
+
+## Part 1 — measure the dither law, first, before writing anything
+
+E7 confirmed dither is general (19.97% mean single-square-island share over
+4,065 cells) but did not measure its **law**. Three things are unknown and the
+implementation needs all three:
+
+1. **Is the interleaving random per square, noise-driven, or patterned?** If a
+   square's material at a boundary is an independent coin flip weighted by
+   distance, that is a five-line implementation. If it is a coherent noise
+   field, it is not.
+2. **How wide is the transition band**, and does it vary by material pair?
+   `Grass_Dark`/`Grass_Medium` may dither differently from `Sand`/`Road_04`.
+3. **What is the probability profile across the band?** Linear ramp, sigmoid,
+   or a step with noise on top?
+
+**Suggested shape.** `GroundCensus` already loads every square's solid material
+into a grid. For each boundary between two materials, compute each square's
+signed distance to the true edge — for instance by taking the majority material
+in a window and finding the zero crossing — then histogram
+P(minority material) against that distance, bucketed per material pair.
+
+**Predict the shape before running it.** If P goes 0 → 1 over 1 square, dither
+is not a band and E7's island count means something else. A ramp over 3–5
+squares is the working hypothesis and is what the 19.97% island share suggests.
+
+**Falsification.** If P(minority) at a given distance is not independent
+between neighbouring squares — check by comparing the observed run-length
+distribution of minority squares against the run lengths a Bernoulli process
+with the same P would give — dither is a noise field, not per-square random,
+and a per-square implementation will look visibly wrong even with the right
+marginal probability. **Run that check. It is the one that decides the
+implementation.**
+
+Record the answer in a FINDINGS block. It is small enough to fold into STATE
+§27 rather than needing its own document.
+
+## Part 2 — build
+
+Only after Part 1 answers. In dependency order:
+
+1. **`GroundMaterial`** — the seven natural materials with their block bases
+   and the CONFIRMED priority table from STATE §27. An enum with a rank.
+   Roads too, noting `Road_03`/`Road_05` are UNVERIFIED against each other.
+2. **A region layer** — one material per square from GIS land use, pure
+   interiors. STATE §27 and §22: vanilla's own regions are parcels, and the
+   import already carries land use. `emptyoutside` rooms and fence tiles are
+   co-located signals.
+3. **A dither pass** at region boundaries, implementing Part 1's answer.
+4. **Do not write masks.** That is E9, and it must run after every square's
+   material is final.
+
+## Definition of done
+
+- Part 1's answer recorded, with its falsification check run.
+- Regions and dither written into the generated map.
+- **A rendered before/after**, same code path as the vanilla reference:
+
+```fish
+java -cp out pzformat.Probe render MAP_DIR "$PZ/media/texturepacks" CELL X Y 24 0 0 OUT.png
+```
+
+  Compare against `docs/vanilla_blend_tight.png`. Ground will still have hard
+  edges — masks are E9 — but the **scattered tan diamonds must be gone**,
+  replaced by coherent regions. If they are not, the region layer has not
+  worked and E9 will not save it.
+
+## Falsification
+
+Name, before building, what the render would look like if the region layer were
+broken but the code ran without error. Predict the island share your own dither
+pass produces and check it against vanilla's 19.97%.
+
+## Do not
+
+- **Do not re-measure the priority table.** CONFIRMED over 4,065 cells.
+- **Do not write mask tiles.** E9.
+- **Do not touch the tuft layer.** `GroundPalette`'s measured model is sound.
+  Rename its "overlay" to "tuft" in E9, not here — three meanings now collide.
+- Do not use `Probe findprop` for any rate or distribution. It caps at 3 hits.
+
+---
+
 ## E1 — Zombie density  ✅ DONE 2026-08-11
 
 > `chunkGrid` was all zeros, which is why the generated map had no zombies at
@@ -770,7 +867,7 @@ store chosen. Shapes only:
 
 ---
 
-## E2 / E4 / E5 / E6 / E8 / E9 / E10 — stubs
+## E2 / E4 / E5 / E6 / E9 / E10 — stubs
 
 - **E2 Calibrate density.** 2 near buildings is at the low end of vanilla's
   0–10 range, and seven buildings is a hamlet, not a town. The import already
@@ -803,11 +900,6 @@ store chosen. Shapes only:
   authored cells it is a human painting land use, and for us it is GIS land
   use. There is no hidden algorithm. Distance banding is still worth extracting
   as a signal, but it is not the region driver.
-- **E8 Region layer from GIS land use.** One material per square, pure
-  interiors, from the land-use data the import already carries. STATE §26
-  confirms vanilla's own regions are parcels: 42_40's mid-cell `Sand` is a
-  fenced yard between a road and a shed, inside an `emptyoutside` room. Add the
-  dither pass only if E7 says dither is a convention.
 - **E9 Mask pass.** Implements STATE §26's rule. Runs **after** every square's
   material is final — a square's masks depend on its neighbours, so this cannot
   be folded into the per-square roll in `GroundPalette.roll()`. Mask tiles must
