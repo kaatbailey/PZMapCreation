@@ -40,7 +40,7 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 | `[x]` | **A2b** Stop writing `WorldGenOverride.lua` | — | **Confirmed inert in game 2026-08-11.** Write still to be deleted |
 | `[ ]` | **A2c** Authored trees vs engine biome vegetation | A2-gate | Open question, not cleanup |
 | `[ ]` | **A2-gate** Settle tree ownership | — | **A written decision.** Positional test in game |
-| `[ ]` | **A3** Auto wall-joining | A1, A3-pre1, A3-pre2 | `WallJoin` + tests |
+| `[ ]` | **A3** Auto wall-joining | A1, A3-pre1, A3-pre2, E9 | `WallJoin` + tests. **Inherits E9's neighbour-rule engine** — do not write a second one |
 | `[ ]` | **A3-pre1** Fix `edgeOf` decoration fallback | — | Small. `attachedN` proxy is reachable via a public method |
 | `[ ]` | **A3-pre2** Confirm tileset variant cycle | — | Small. Wall-joining picks by position, not flags alone |
 | `[ ]` | **A4** Validation rule engine | A1, A3 | `Validator` + rule set. **Must work at 1×N** (STATE §19) |

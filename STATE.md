@@ -1826,6 +1826,45 @@ suggest the engine is adding trees rather than only substituting art for
 ours. Not conclusive — canopy sprites overlap and hide bare ground — but
 worth holding in mind when the positional test is run.
 
+### A fifth mechanism: `Fix2xMap` rewrites tile names at load — CONFIRMED
+
+Found 2026-08-13 while rendering a vanilla reference for E7, not by looking
+for it. `IsoChunk` holds a static legacy-name translation table applied to
+**every tile as the chunk loads**, before any of the mechanisms above run.
+Three kinds of entry:
+
+| kind | example | effect |
+|---|---|---|
+| direct rename | `vegetation_groundcover_01_0` → `blends_grassoverlays_01_16` | tile becomes a different tile |
+| deletion | `vegetation_groundcover_01_6` → `""` | tile vanishes |
+| randomised substitution | `vegetation_foliage_01_0..16` → `randBush` | resolved per load to `f_bushes_1_(64 + Rand.Next(16))` |
+| randomised substitution | `vegetation_groundcover_01_18..23` → `randPlant` | resolved per load to `d_plants_1_(Rand.Next(4)*16 + Rand.Next(8))` |
+
+Also covers `walls_exterior_house_01_20..31`, `walls_exterior_roofs_01_24..41`
+→ `walls_exterior_roofs_03_*`, and several `location_shop_greenes_01_*`.
+
+**Why this matters to §25 directly.** The "Evidence against" above rests on
+`Probe findprop` returning `vegetation_trees_01_8 / _10 / _11` at authored
+positions. Those names being **in the file** is confirmed and unchanged. But
+what the engine renders for them is not necessarily what we wrote, because a
+name in `Fix2xMap` is rewritten at load. **This does not resolve tree
+ownership either way** — it adds a mechanism that must be ruled in or out
+before the positional test's result can be interpreted.
+
+**Check, before running the positional test:** grep the decompiled
+`IsoChunk` for the exact tile names `TreeScatter` and `TreePalette` emit. If
+any appear as `Fix2xMap` keys, the test is measuring the engine's
+substitution, not its scatter, and the three outcomes listed above do not mean
+what they say.
+
+```fish
+grep -n -e vegetation_trees_01 -e vegetation_foliage_01 \
+    ~/Downloads/ZOMBOIDSTUFF/decompiled/IsoChunk.java
+```
+
+**Falsifier for the whole concern:** if none of our emitted names are keys in
+the table, `Fix2xMap` is irrelevant to us and this note can be closed.
+
 ---
 
 ### Do not start from the biome bands
@@ -2016,3 +2055,47 @@ impossible beyond 10 squares) and substitutes `e_newgrass_1_40` or
 `e_newgrass_1_42` about 75% of the time. This bears on §25: authored trees near
 the map edge may be deleted by this pass rather than by `genMapSquare`, which
 would confound the positional test if it is run too close to the boundary.
+
+### `CellRenderer` — two known limitations, neither affecting the game
+
+Found while producing the E7 reference render. **Both are renderer-only. Map
+data is correct in both cases and the game is unaffected.** Recorded because
+Charter §4 says the renderer is a hypothesis too, and it has now been wrong
+three times.
+
+1. **No `Fix2xMap` translation.** `CellRenderer` looks tile names up in the
+   sprite atlas literally, so any legacy name the engine would rewrite at load
+   is reported missing and skipped. On a 9×9 pure-grass patch of 42_40 this was
+   4 of 54 distinct sprites and 13 skipped draws — all vegetation
+   (`vegetation_groundcover_01_21`, `vegetation_trees_01_8/9/10`), none of them
+   `blends_natural_01`. Applying the table before atlas lookup would fix this
+   and every future instance. Note the randomised entries cannot be reproduced
+   exactly, only sampled.
+2. **Tree sprite vertical anchor.** A tree renders with its canopy sitting flat
+   on the grass and, at `zTo` > 0, its trunk hanging below the ground plane.
+   The tile is correct — (118,196) carries `vegetation_trees_01_9` with
+   `tree 2`, a genuine vanilla tree tile. `Z_STEP = 96` and the `oy` offset
+   place tall sprites wrongly relative to the floor diamond. **Owner decision
+   2026-08-13: ignore.** It does not affect the game and no chunk depends on it.
+
+**What this does not compromise:** the E7 reference render
+(`docs/` or `~/Downloads/vanilla_blend_tight.png`, 42_40 x=110 y=198 size 9).
+Every missing sprite was vegetation; no ground tile failed to resolve, and the
+ground reads correctly. The mask layer composites properly — `CellRenderer`
+draws the full square stack in stored order onto an ARGB canvas, so transparent
+mask art blends over the solid beneath it. **The renderer can validate E9.**
+
+### Renderer invocation — two argument-shape traps
+
+`Probe render` reverses the argument order used by `square`, `findprop` and
+`roomgeom`, and wants a *texture pack dir* rather than a media dir:
+
+```fish
+java -cp out pzformat.Probe render "$MAPS/Muldraugh, KY" \
+    "$PZ/media/texturepacks" 42_40 110 198 9 0 0 ~/Downloads/out.png
+```
+
+`$PZ/media` yields `packs loaded: 0` and every sprite missing. And in
+`Probe.java` the guard on both `zFrom` and `zTo` is `args.length > 8`, so
+**passing nine arguments silently ignores `zFrom` and falls back to z 0..2.**
+Pass all ten.

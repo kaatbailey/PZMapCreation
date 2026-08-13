@@ -62,9 +62,12 @@ public final class CellRenderer {
                 + "   pages retained: " + atlas.pagesRetained
                 + "   sprites indexed: " + atlas.spritesIndexed);
         for (String f : atlas.failures) System.out.println("   pack failed: " + f);
-        int missing = 0;
-        for (String n : needed) if (!atlas.has(n)) missing++;
+        List<String> missingNames = new ArrayList<>();
+        for (String n : needed) if (!atlas.has(n)) missingNames.add(n);
+        Collections.sort(missingNames);
+        int missing = missingNames.size();
         System.out.println("sprites not found: " + missing + " / " + needed.size());
+        for (String n : missingNames) System.out.println("   missing: " + n);
 
         // Canvas bounds. Corners of the region in screen space, plus sprite extents.
         int minSx = Integer.MAX_VALUE, maxSx = Integer.MIN_VALUE;
@@ -91,6 +94,8 @@ public final class CellRenderer {
         g.fillRect(0, 0, width, height);
 
         long drawn = 0, skipped = 0;
+        Set<String> skippedNoRecord = new TreeSet<>();
+        Set<String> skippedNoImage = new TreeSet<>();
         for (int z = zFrom; z <= zTo; z++)
             for (int y = y0; y < y0 + size; y++)
                 for (int x = x0; x < x0 + size; x++) {
@@ -101,9 +106,9 @@ public final class CellRenderer {
                     int sy = originY + (x + y) * QUARTER_W - (z - zFrom) * Z_STEP;
                     for (String n : names) {
                         SpriteAtlas.Sprite s = atlas.get(n);
-                        if (s == null) { skipped++; continue; }
+                        if (s == null) { skipped++; skippedNoRecord.add(n); continue; }
                         BufferedImage sub = s.image();
-                        if (sub == null) { skipped++; continue; }
+                        if (sub == null) { skipped++; skippedNoImage.add(n); continue; }
                         int dw = (int) Math.round(sub.getWidth() * s.scale);
                         int dh = (int) Math.round(sub.getHeight() * s.scale);
                         int dx = sx + (int) Math.round(s.ox * s.scale);
@@ -117,6 +122,10 @@ public final class CellRenderer {
         Files.createDirectories(outPng.toAbsolutePath().getParent());
         ImageIO.write(img, "png", outPng.toFile());
         System.out.println("sprites drawn: " + drawn + "   skipped: " + skipped);
+        if (!skippedNoRecord.isEmpty())
+            System.out.println("   not in atlas (" + skippedNoRecord.size() + "): " + skippedNoRecord);
+        if (!skippedNoImage.isEmpty())
+            System.out.println("   in atlas, no image (" + skippedNoImage.size() + "): " + skippedNoImage);
         System.out.println("\nwrote " + outPng.toAbsolutePath());
         System.out.println("Open it and compare against the in-game map. Wrong geometry"
                 + " is obvious by eye in a way that byte checks cannot show.");
