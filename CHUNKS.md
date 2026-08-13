@@ -87,8 +87,8 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 | `[ ]` | **E4** Scene rotation pass | §17 (resolved) | Footprints axis-aligned before rasterizing |
 | `[ ]` | **E5** `FootprintSnap` | E4 | **Shared with the editor** — refuses off-axis footprints |
 | `[ ]` | **E6** Extract `BiomeMapWriter` distance banding | — | Small. Three consumers want a region signal |
-| `[ ]` | **E7** Ground precedence and dither generality | E3 | **A document. No code.** Priority table + non-town rectangle |
-| `[ ]` | **E8** Region layer from GIS land use | E7 | Regions with pure interiors |
+| `[x]` | **E7** Ground precedence and dither generality | E3 | **CLOSED 2026-08-13. Priority table CONFIRMED** over 4,065 cells (STATE §27, `docs/E7_GROUND_PRECEDENCE.md`) |
+| `[ ]` | **E8** Region layer from GIS land use | E7 | Regions with pure interiors **plus a dither pass** — E7 confirmed dither is general |
 | `[ ]` | **E9** Mask pass | E7, E8 | **Shared with A3** — neighbour-rule engine, ground is its first consumer |
 | `[ ]` | **E10** Restore dirt, gated to yards and tracks | E8 | Reverses test 27's symptom fix |
 
@@ -145,6 +145,31 @@ Every prompt below assumes this, and every prompt written later must include it:
 ### Standing environment notes
 
 Added 2026-08-11 after each of these cost real time.
+
+### `Probe findprop` finds an example, never all of them
+
+`PropsProbe.find` is hard-capped at **3 hits per cell**. Used to build a rate or
+a distribution it returns a clean, plausible, entirely void number — a 3-square
+sample cannot produce a run longer than 1, which is how a dither test came back
+"100% width 1" for a cell already measured by hand to be dithered. It agreed
+with the hypothesis under test, which is why it nearly got through.
+
+For a census use `pzformat.GroundCensus`, which walks every square of every
+named cell in one JVM run:
+
+```fish
+java -cp out pzformat.GroundCensus "$PZ/media" "$MAPS/Muldraugh, KY" 42_40 35_35
+```
+
+Whole map, roughly 100 seconds:
+
+```fish
+set cells (for f in "$MAPS/Muldraugh, KY"/*.lotheader; basename $f .lotheader; end)
+java -cp out pzformat.GroundCensus "$PZ/media" "$MAPS/Muldraugh, KY" $cells > ~/Downloads/census.txt
+```
+
+Note `ls | xargs -n1 basename` breaks on the space in "Muldraugh, KY" — it
+splits the path and yields a bogus cell named `Muldraugh,`. Use the fish loop.
 
 ### GREP RULE — no exceptions
 
@@ -693,79 +718,37 @@ store chosen. Shapes only:
 
 ---
 
-## E7 — Ground precedence and dither generality
+## E7 — Ground precedence and dither generality  ✅ DONE 2026-08-13
 
-**Deliverable is a document, not code.** Same rule as E3 and B1. E3 produced an
-implementable mask rule with two holes in it; this chunk fills them. If this
-chunk produces a `GroundPalette` rewrite or a region layer, it has failed —
-those are E8 and E9.
-
-**Why this is next.** STATE §26's implementation list has a hard dependency at
-the top. The mask pass cannot decide *which* square carries the mask without a
-material priority table, and only three of twenty-one `blends_natural_01` pairs
-are known. Nothing downstream can start.
-
-**Read first:** STATE §26 and `docs/E3_GROUND_BLENDING.md` §11, which lists six
-named checks. This chunk runs the first four.
-
-## Answer these, with evidence for each
-
-1. **The material priority table.** For each pair of ground materials that
-   occurs adjacently in vanilla, which one supplies the mask? Known:
-   `Grass_Dark` > `Grass_Medium` > `Sand`, and `Road_02` > `Road_04`. It is not
-   block-index order — Sand is block 0 and loses to Medium at block 32.
-2. **Is it a total order?** If some pair shows each material masking the other
-   in different places, priority is contextual and the mask rule needs a
-   tie-break that does not currently exist.
-3. **Do masks cross tilesets?** Does a `blends_natural_01` square adjacent to a
-   `blends_street_01` square carry a road mask, or is that boundary hard? No
-   sample was taken in E3.
-4. **Is dither a convention or a 42_40 quirk?** E3 found `Grass_Dark` and
-   `Grass_Medium` interpenetrating per square across 2–4 squares at their
-   boundary. That was one area of one hand-authored town cell. If a non-town
-   cell shows a clean straight material edge with masks and no interleaving,
-   **implementation step 3 disappears and E8 gets simpler.**
-5. **The multi-material mask case.** Find a square bordering two *different*
-   higher-priority materials — the Sand/grass boundary around (60–104, 200) is
-   the obvious hunting ground. Does it carry masks from both blocks?
-
-## Method
-
-**Sample contiguously.** This is the method note E3 added to STATE §4, and it
-is the whole reason §24 was wrong for two sessions. A 4-tile stride through a
-dithered boundary returned four identical materials in a row and was read as a
-region band. Rectangles, not transects.
-
-**Filter on `solidfloor`, never on `FloorMaterial`.** Mask tiles carry
-`FloorMaterial` too. Three of the four ground transects in §21 and §24 are
-wrong for exactly this reason.
-
-**Prefer a non-town cell for question 4**, and a cell other than 42_40 for
-everything else. Every measurement E3 made came from one cell.
-
-`CellRenderer` composites masks correctly — it draws the whole square stack in
-stored order onto an ARGB canvas — so a rendered PNG of a vanilla boundary is a
-legitimate check here and is much faster to read than probe output.
-
-## Definition of done
-
-A markdown document a future session can implement E8 and E9 from. Each claim
-CONFIRMED or UNVERIFIED with its source named. Contradictions recorded as
-contradictions.
-
-## Falsification
-
-For each claim, say what observation would disprove it. E3's four failed
-hypotheses all looked right against the data that suggested them; what caught
-them was checking against data that had not been used to form them.
-
-## Do not
-
-- **Do not build the region layer.** That is E8, and it depends on this.
-- **Do not touch `GroundPalette`.** Its tuft model is measured and sound; only
-  its naming is wrong, and renaming is E9's job.
-- **Do not assume the priority order is derivable** from block index, from
-  brightness, or from anything else. Measure it.
+> Measured over **4,065 cells — the whole Muldraugh map** — with a new
+> read-only `GroundCensus` class. All five questions answered, and two
+> predictions refuted by data that had not been used to form them.
+>
+> **The priority table is CONFIRMED and is not derivable:**
+> `Grass_Dark` > `Grass_Medium` > `Grass_Light` > `Sand` > `Dirt_Grass` >
+> `Dirt` > `Clay`. Transitivity observed directly, not inferred. Grass
+> outranks road throughout.
+>
+> **Priority is a strong default, not a law.** Every pair shows both
+> directions. Natural ground reverses at 1 in 3,000 to 1 in 36,000 — a noise
+> floor. Similar road types reach 2.5:1, which is no rule at all. Author from
+> a strict table; vanilla's inconsistency is not worth reproducing.
+>
+> **Dither is general** — mean single-square-island share 19.97% across all
+> 4,065 cells, refuting the prediction that it was a 42_40 quirk. E8's dither
+> pass is required, not conditional.
+>
+> **Three implementation traps found.** `FloorOverlay` alone does not identify
+> a mask — decal sheets carry it without `FloorMaterial`. `blends_street_01`
+> blocks hold **8** masks, not 12; there is no second variant set. And masks
+> cross tilesets freely, so the rule keys on `FloorMaterial`, never on sheet.
+>
+> **E3's Clay ordering was wrong** — asserted from n=3, refuted at corpus
+> scale. Clay is the lowest-priority natural material, not the highest.
+>
+> Full document: `docs/E7_GROUND_PRECEDENCE.md`. STATE §27, seven Corrections
+> rows, one new method note. **The one thing E8 still needs is the dither
+> spatial law**, which E7 did not measure.
 
 ---
 

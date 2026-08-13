@@ -160,6 +160,12 @@ source, never by more testing of the same kind.**
   transect through a dithered ground boundary returned four identical
   materials in a row and was read as a region band; the contiguous row is
   `M D M D M M M D D`. Two ground transects were wrong this way (§26).
+- **A sampling tool's cap is part of the measurement.** `Probe findprop` is
+  hard-capped at 3 hits per cell by `PropsProbe.find`. Built into a rate, it
+  produced a clean, plausible, entirely void result — "100% width 1", which
+  happened to agree with the hypothesis under test. A 3-square sample cannot
+  produce a run longer than 1. Check what a tool *can* return before believing
+  what it did return (§27).
 - **Change one thing per test.**
 - **The renderer is a hypothesis too.** It has been wrong twice. When the
   picture looks wrong, the picture may be what is wrong.
@@ -819,6 +825,13 @@ Acting on any of these wastes real time.
 | The biome map is what removed the map-edge seam | **INCOMPLETE.** `Blending.changeGround` feathers solid tiles 0–3 squares in from any edge shared with a procedural chunk. A second mechanism is doing visible work there (§26). |
 | `GroundSurvey`'s "never more than one overlay, 0 of 257,703" describes ground stacking | **MEASURED THE TUFT LAYER ONLY.** True of `blends_grassoverlays_01`; it never counted mask tiles, which live on the base sheet (§26). |
 | The engine will blend our authored ground at load | **FALSE.** `Blending.applyBlending` fires only where a chunk borders a **procedural** chunk, and it replaces solid tiles rather than writing masks. Every mask must be authored (§26). |
+| `Clay` is the highest-priority natural material | **FALSE.** Asserted in-session from a 3-cell sample where `Clay > Grass_Dark` appeared at n=3. The full 4,065-cell corpus shows `Dirt > Clay` (1,119) and `Dirt_Grass > Clay` (1,038): **Clay is the lowest.** The n=3 reading sat inside the noise floor (§27). |
+| Mask priority is a total order | **INCOMPLETE.** Every pair in the corpus shows both directions. Natural ground behaves as a rule with a 1-in-3,000 noise floor; similar road types do not separate cleanly, down to 2.5:1 (§27). |
+| `FloorOverlay` identifies a blend mask | **INSUFFICIENT.** `street_curbs_01`, `overlay_grime_floor_01`, `industry_01` and `location_trailer_02` carry `FloorOverlay` with **no** `FloorMaterial` — they are decals. The discriminator needs `FloorOverlay` **and** `FloorMaterial` **and** a `FloorAttachment*` flag (§27). |
+| Dither may be a 42_40 hand-painting quirk | **RESOLVED — it is general.** Mean single-square-island share 19.97% across all 4,065 Muldraugh cells. No curved or diagonal edge can produce a single-square component (§27). |
+| The 16-tile mask block contract is uniform | **TRUE for natural ground only.** `blends_street_01` uses **8** masks per block, one variant set, not two. `Clay` uses 28 (§27). |
+| Indices 112–127 of `blends_natural_01` are an unidentified side-mask set | **They carry `FloorMaterial Clay`.** Why clay has 28 mask indices where every other natural material has 12 is still UNVERIFIED (§27). |
+| `Probe findprop` can measure a distribution | **FALSE.** Hard-capped at 3 hits per cell. It finds an example; it is never a census (§27). |
 
 Known-stale, not yet cleaned up: `TreeScatter` / `TreePalette` still place
 ~7,800 trees the engine deletes; `WorldGenOverride.lua` is still written and is
@@ -2099,3 +2112,153 @@ java -cp out pzformat.Probe render "$MAPS/Muldraugh, KY" \
 `Probe.java` the guard on both `zFrom` and `zTo` is `args.length > 8`, so
 **passing nine arguments silently ignores `zFrom` and falls back to z 0..2.**
 Pass all ten.
+
+---
+
+## 27. Ground precedence — the priority table, measured
+
+E7, 2026-08-13. Full document: `docs/E7_GROUND_PRECEDENCE.md`. Deliverable was
+a document; the only code added was `pzformat.GroundCensus`, read-only.
+
+Measured over **4,065 cells — the entire Muldraugh retail map** — at z=0, by
+`GroundCensus`, which walks every square in one JVM run. §26's mask mechanism
+came from a single 45-square rectangle; this tests it at corpus scale and fills
+the four holes it left.
+
+### The material priority table — CONFIRMED
+
+The higher-priority material supplies the mask; the lower-priority square
+carries it.
+
+**`Grass_Dark` > `Grass_Medium` > `Grass_Light` > `Sand` > `Dirt_Grass` >
+`Dirt` > `Clay`**
+
+| pair | n | pair | n |
+|---|---|---|---|
+| `Grass_Dark > Grass_Medium` | 8,119,438 | `Grass_Light > Dirt` | 677,353 |
+| `Grass_Medium > Grass_Light` | 3,424,535 | `Grass_Light > Dirt_Grass` | 284,699 |
+| `Dirt_Grass > Dirt` | 1,319,008 | `Grass_Light > Sand` | 256,784 |
+| `Grass_Dark > Grass_Light` | 615,314 | `Grass_Medium > Sand` | 67,082 |
+| `Grass_Medium > Dirt` | 484,489 | `Grass_Dark > Sand` | 49,306 |
+| `Grass_Dark > Dirt` | 484,001 | `Sand > Dirt` | 6,140 |
+| `Dirt > Clay` | 1,119 | `Dirt_Grass > Clay` | 1,038 |
+
+**Transitivity is observed, not inferred** — `Grass_Dark` is seen masking
+directly onto all six materials below it. No skip link contradicts the chain.
+
+**It is not derivable.** Block index order is 0, 16, 32, 48, 64, 80, 96; the
+priority order is 16, 32, 48, 0, 80, 64, 96. Not brightness either — dark grass
+outranks light grass, but pale `Sand` outranks dark `Dirt`. **Hard-code it.**
+
+Grass consistently outranks road (`Grass_Dark > Road_04` 284,583, and so on for
+every grass/road pair). Roads among themselves:
+**`Road_01` > `Road_02` > `Road_04` > `Road_03` ≈ `Road_05` > `Road_07` >
+`Road_06`** — UNVERIFIED as strict, since `Road_03`/`Road_05` separate at only
+24:1. `Burnt > Grass_Light` (2,608); `Burnt`'s wider position is UNVERIFIED.
+
+### Priority is a strong default, not a law
+
+**Every pair shows both directions.** The magnitude separates two regimes:
+
+| pair | dominant | reverse | ratio |
+|---|---|---|---|
+| `Grass_Medium` / `Grass_Light` | 3,424,535 | 94 | 36,400 : 1 |
+| `Grass_Light` / `Sand` | 256,784 | 86 | 2,986 : 1 |
+| `Dirt` / `Dirt_Grass` | 1,319,008 | 94,696 | 14 : 1 |
+| `Road_01` / `Road_02` | 495 | 63 | 8 : 1 |
+| `Grass_Light` / `Road_01` | 137 | 55 | 2.5 : 1 |
+
+For natural materials the reversals are a noise floor — hand-edits, or tool
+re-runs over edited ground. **Vanilla is not internally consistent here and we
+should not reproduce its inconsistency.** Author from a strict table. A
+validator flagging "mask direction disagrees with the table" should fire on
+roughly 1 vanilla square in 3,000; that rate is itself a check the table is
+right.
+
+### Dither is general — CONFIRMED
+
+§26 flagged dither as possibly a 42_40 quirk. The prediction going into E7 was
+that forest cells would show clean edges. **They do not.**
+
+**Mean single-square-island share: 19.97% across all 4,065 cells.** A
+single-square 4-connected component is one square of material A entirely
+surrounded by B; no curved, diagonal or irregular edge can produce one. One
+component in five is dither.
+
+**E8's dither pass is required, not conditional.**
+
+**UNVERIFIED — the dither's spatial law.** We know it exists and roughly how
+dense it is. Random per square, noise-driven, or patterned? How does band width
+relate to the material pair? **This is the one measurement E8 still needs.**
+
+### Block contract, completed
+
+| sheet | masks per block | layout |
+|---|---|---|
+| `blends_natural_01` | **12** | 4 corners B+1..4, 8 sides B+8..15 (two variant sets) |
+| `blends_street_01` | **8** | 4 corners B+1..4, 4 sides B+8..11 (**one** variant set) |
+| `floors_burnt_01` | 20 at 9–31 | same vocabulary, fire damage |
+
+Natural blocks confirmed for all seven materials, not just the one E3 measured.
+**Roads have no second variant set** — code assuming the natural shape will emit
+`blends_street_01_12`..`_15`, which are not road masks.
+
+**`Clay` is the exception:** 28 indices spanning 97–127 where the block predicts
+97–100 and 104–111. CONFIRMED as observation, UNVERIFIED as interpretation.
+Emit only 97–100 and 104–111 and it does not block anything.
+
+### Masks cross tilesets, and multi-material squares are common
+
+Both were untestable in E3. Both confirmed:
+
+- `blends_street_01_48` (Road_04) carrying `blends_natural_01_24` (Grass_Dark N).
+- `blends_natural_01_16` (Grass_Dark) carrying `industry_01_58`.
+- `0_36 (7,94)`–`(7,179)`: a contiguous run of `Grass_Light` carrying **both**
+  `Grass_Dark` and `Grass_Medium` masks.
+- `42_40 (1,77)`: `Road_04` with `Grass_Medium` and `Road_01` masks —
+  multi-material *and* cross-tileset on one square.
+
+**The rule keys on `FloorMaterial`, not on tileset.** And E9's mask pass runs
+once per distinct outranking neighbour material, concatenating the results —
+§26's guessed extension, now confirmed.
+
+### The discriminator, corrected
+
+```
+isBlendMask(tile) = props.has("FloorOverlay")
+                 && props.has("FloorMaterial")
+                 && props.hasAny("FloorAttachmentN","FloorAttachmentS",
+                                 "FloorAttachmentE","FloorAttachmentW")
+```
+
+§26's layer table implies `FloorOverlay` alone is enough. It is not — decal
+sheets carry it without `FloorMaterial`.
+
+### What E8 and E9 implement — revised from §26
+
+1. `GroundMaterial` priority table, absolute. **CONFIRMED, do not re-measure.**
+2. Region layer from GIS land use (E8).
+3. **Dither pass (E8) — now required.** Target ~20% single-square islands at
+   boundaries. Spatial law still unmeasured.
+4. Mask pass (E9), per §26's rule with four amendments: key on `FloorMaterial`;
+   use the three-property discriminator; run once per outranking neighbour and
+   concatenate; emit 8 masks for street blocks, 12 for natural.
+5. Restore dirt (E10).
+6. Rename `GroundPalette`'s "overlay" to "tuft" — now three meanings collide
+   (mask, tuft, decal).
+
+### Named checks not run
+
+1. **The dither spatial law** — what E8 needs, and E7 did not measure.
+2. `Road_03` vs `Road_05` — the weakest link in the road order, may be no order.
+3. `Burnt`'s position in the wider order. One pair observed.
+4. Clay 112–127 — extra variant sets, or an eighth material?
+5. Whether the noise floor is spatially clustered. If the 1-in-3,000 reversals
+   concentrate in particular cells they are hand-edits; if uniformly scattered,
+   something systematic is being missed.
+
+### Noticed, out of scope
+
+`floors_burnt_01` carries `FloorMaterial Burnt` masks and participates in the
+priority system. Fire damage uses the blend vocabulary — a **third** consumer
+for E9's neighbour-rule engine, alongside ground and A3's wall-joining.
