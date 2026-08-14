@@ -101,6 +101,12 @@ public final class GisCells {
                 // not its neighbours are also being written.
                 Random rng = new Random(SEED * 31 + (long) cx * 7919 + cy);
 
+                // One ground material per square, regions plus dither. Reads
+                // cover at global coordinates and hashes the dither by world
+                // position, so a cell is identical whether or not its
+                // neighbours are written — same contract as `rng` above.
+                GroundMaterial[][] region = GroundRegions.build(g, ox, oy, SEED);
+
                 int squares = 0, edgeFilled = 0, overlays = 0;
                 int[] roadSpawn = null;
                 long roadBest = Long.MAX_VALUE;
@@ -117,8 +123,10 @@ public final class GisCells {
                             // empty would flip the whole 8x8 chunk to
                             // procedural generation, discarding anything
                             // authored in it.
+                            GroundMaterial m = region[x][y];
+                            if (m == null) m = GroundMaterial.GRASS_DARK;
+                            stack.add(cell.tileIndex(m.solid(rng)));
                             GroundPalette.Ground gr = ground.roll(rng);
-                            stack.add(cell.tileIndex(gr.base()));
                             if (gr.overlay() != null) {
                                 stack.add(cell.tileIndex(gr.overlay()));
                                 overlays++;
@@ -137,8 +145,13 @@ public final class GisCells {
                                     }
                                 }
                                 default -> {
+                                    GroundMaterial m = region[x][y];
+                                    if (m == null) m = GroundMaterial.GRASS_DARK;
+                                    stack.add(cell.tileIndex(m.solid(rng)));
+                                    // Tufts stay as measured. cleanChunk strips
+                                    // them from Sand anyway (STATE §26), so a
+                                    // yard square simply loses its tuft in game.
                                     GroundPalette.Ground gr = ground.roll(rng);
-                                    stack.add(cell.tileIndex(gr.base()));
                                     if (gr.overlay() != null) {
                                         stack.add(cell.tileIndex(gr.overlay()));
                                         overlays++;

@@ -88,7 +88,7 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 | `[ ]` | **E5** `FootprintSnap` | E4 | **Shared with the editor** — refuses off-axis footprints |
 | `[ ]` | **E6** Extract `BiomeMapWriter` distance banding | — | Small. Three consumers want a region signal |
 | `[x]` | **E7** Ground precedence and dither generality | E3 | **CLOSED 2026-08-13. Priority table CONFIRMED** over 4,065 cells (STATE §27, `docs/E7_GROUND_PRECEDENCE.md`) |
-| `[ ]` | **E8** Region layer from GIS land use | E7 | Regions with pure interiors **plus a dither pass** — E7 confirmed dither is general |
+| `[x]` | **E8** Region layer and the dither law | E7 | **CLOSED 2026-08-14. The scattered-diamond defect is FIXED** (STATE §28, `docs/e8_final.png`) |
 | `[ ]` | **E9** Mask pass | E7, E8 | **Shared with A3** — neighbour-rule engine, ground is its first consumer |
 | `[ ]` | **E10** Restore dirt, gated to yards and tracks | E8 | Reverses test 27's symptom fix |
 
@@ -116,8 +116,13 @@ started this — ground reading as scattered tan diamonds — is fully diagnosed
 and still present. E8 therefore builds, opening with the one measurement E7
 left rather than deferring it to a fourth document chunk. The order is now:
 
-**E8 → E9 → A2-gate → B1 → B2 → C1**, with A3-pre1/pre2 and E6 available as small
-fillers at any point.
+**AMENDED 2026-08-14.** E8 is closed and the defect that started this whole
+line of work is fixed. E9 adds the mask layer, which softens the remaining hard
+edges between materials — the last piece of §26's four-layer model. The order is
+now:
+
+**E9 → A2-gate → B1 → B2 → C1**, with E10, E11 and A3-pre1/pre2 available as
+small fillers at any point.
 
 **E3 first** because ground appearance is the most immersion-breaking defect
 on the generated map (owner, 2026-08-11) and because it is an investigation,
@@ -758,94 +763,112 @@ store chosen. Shapes only:
 
 ---
 
-## E8 — Region layer, and the dither law
+## E8 — Region layer, and the dither law  ✅ DONE 2026-08-14
 
-**This chunk builds.** E3 and E7 were documents; three investigation chunks in
-a row is enough, and the defect that started this is still on the map. E8 ends
-with regions and dither actually written and a rendered before/after.
+> **The defect is fixed.** Generated open country now reads as coherent grass
+> with sand yards, grass verges and softened boundaries, instead of scattered
+> tan diamonds. Render: `docs/e8_final.png`.
+>
+> **Part 1 — dither is INDEPENDENT PER SQUARE, not a noise field.**
+> Matched-distance lift is 0.95–1.14 on the boundary contour across every
+> material pair and filter window, on 8,000+ pairs. Two thirds of contour
+> minority components are singletons. The 5–10× lift further out is a different
+> population — genuine small regions the majority filter smoothed away, mean
+> component size 4 to 165 against 2.06 on the contour. A single correlated
+> field cannot give ρ≈0 at p=0.46 and ρ≈0.7 at p=0.085.
+>
+> **`GisImport.Cover` is `{NONE, ROAD, BUILDING}` — there is no landcover.**
+> §22 and §27 both said the import carries land use; that is true of developed
+> surfaces and false of everything else. So open country is ONE material.
+> Multiple grass regions wait on a data source we do not have. Owner decision
+> 2026-08-14: yards from footprints and verges from roads, which the data does
+> support; no noise field, which it does not.
+>
+> **The dither rate is FITTED, not derived.** Vanilla's measured P(minority|d)
+> is the outcome after both sides of an edge have dithered — using it as an
+> input flip probability over-produced isolates 4×. Shipped
+> `P = {0.06, 0.03, 0.01, 0.005}` from a four-point fit.
+>
+> **All four predictions failed** — noise field, band width, halving response,
+> geometric floor. What survived every check was the independence result.
+>
+> **OPEN:** vanilla's 3-neighbour and 4-neighbour targets cannot be hit
+> together. That is a region *shape* difference, not a dither rate. See E11.
+>
+> New code: `GroundMaterial`, `GroundRegions`, `DitherLaw`. `GisCells` takes
+> ground from the region layer. `GroundPalette` untouched. STATE §28.
 
-**Read first:** STATE §26 and §27, and `docs/E7_GROUND_PRECEDENCE.md`. The
-priority table is CONFIRMED — **do not re-measure it.**
+---
 
-## Part 1 — measure the dither law, first, before writing anything
+## E9 — Mask pass
 
-E7 confirmed dither is general (19.97% mean single-square-island share over
-4,065 cells) but did not measure its **law**. Three things are unknown and the
-implementation needs all three:
+**This chunk builds.** It adds the last layer of §26's model. After it, ground
+material boundaries are soft rather than hard-edged, and the four-layer model
+— region, texture, dither, mask — is complete.
 
-1. **Is the interleaving random per square, noise-driven, or patterned?** If a
-   square's material at a boundary is an independent coin flip weighted by
-   distance, that is a five-line implementation. If it is a coherent noise
-   field, it is not.
-2. **How wide is the transition band**, and does it vary by material pair?
-   `Grass_Dark`/`Grass_Medium` may dither differently from `Sand`/`Road_04`.
-3. **What is the probability profile across the band?** Linear ramp, sigmoid,
-   or a step with noise on top?
+**Read first:** STATE §26 (the rule), §27 (the priority table and three
+implementation traps), §28 (what E8 built). The priority table is CONFIRMED
+over 4,065 cells — **do not re-measure it.**
 
-**Suggested shape.** `GroundCensus` already loads every square's solid material
-into a grid. For each boundary between two materials, compute each square's
-signed distance to the true edge — for instance by taking the majority material
-in a window and finding the zero crossing — then histogram
-P(minority material) against that distance, bucketed per material pair.
+## What to build
 
-**Predict the shape before running it.** If P goes 0 → 1 over 1 square, dither
-is not a band and E7's island count means something else. A ramp over 3–5
-squares is the working hypothesis and is what the 19.97% island share suggests.
+A mask pass over the material grid `GroundRegions.build` already produces. For
+each square, for each distinct neighbouring material that **outranks** it
+(`GroundMaterial.outranks`), emit that material's mask tiles per §26's rule:
 
-**Falsification.** If P(minority) at a given distance is not independent
-between neighbouring squares — check by comparing the observed run-length
-distribution of minority squares against the run lengths a Bernoulli process
-with the same P would give — dither is a noise field, not per-square random,
-and a per-square implementation will look visibly wrong even with the right
-marginal probability. **Run that check. It is the one that decides the
-implementation.**
+| \|S\| | encoding |
+|---|---|
+| 1 | one side tile |
+| 2, adjacent | **one corner tile** — not two side tiles |
+| 2, opposite | two side tiles |
+| 3 | two corner tiles sharing the middle direction |
+| 4 | four corner tiles |
 
-Record the answer in a FINDINGS block. It is small enough to fold into STATE
-§27 rather than needing its own document.
+where S is the set of orthogonal directions holding that material. Offsets from
+the material's block base B: corners N+W=B+1, E+S=B+2, S+W=B+3, E+N=B+4; sides
+N=B+8, W=B+9, E=B+10, S=B+11, with a second variant set at B+12..B+15 for
+natural ground only.
 
-## Part 2 — build
+**Write it as a general neighbour-rule engine, not a ground-specific pass.** It
+is the same shape as A3 auto wall-joining, and A3's row already records the
+dependency. `floors_burnt_01` is a third consumer.
 
-Only after Part 1 answers. In dependency order:
+## Four traps, all measured
 
-1. **`GroundMaterial`** — the seven natural materials with their block bases
-   and the CONFIRMED priority table from STATE §27. An enum with a rank.
-   Roads too, noting `Road_03`/`Road_05` are UNVERIFIED against each other.
-2. **A region layer** — one material per square from GIS land use, pure
-   interiors. STATE §27 and §22: vanilla's own regions are parcels, and the
-   import already carries land use. `emptyoutside` rooms and fence tiles are
-   co-located signals.
-3. **A dither pass** at region boundaries, implementing Part 1's answer.
-4. **Do not write masks.** That is E9, and it must run after every square's
-   material is final.
+1. **`blends_street_01` blocks hold 8 masks, not 12.** One variant set. Code
+   assuming the natural-ground shape emits `blends_street_01_12`..`_15`, which
+   are not road masks.
+2. **Key on `FloorMaterial`, never on tileset.** Masks cross sheets freely —
+   §27 saw `blends_street_01` solids carrying `blends_natural_01` masks.
+3. **Run once per distinct outranking neighbour and concatenate** — §27
+   confirmed multi-material squares are common.
+4. **Masks go AFTER the solid, before the tuft.** §26: the solid must be first
+   in the stack or `getFloor()` and `cleanChunk` read the wrong tile.
+
+Also: emit only 97–100 and 104–111 for Clay; its 112–127 range is unexplained.
+And rename `GroundPalette`'s "overlay" to **tuft** here — three meanings now
+collide (mask, tuft, decal) and §27 flags it as the likeliest misimplementation.
 
 ## Definition of done
 
-- Part 1's answer recorded, with its falsification check run.
-- Regions and dither written into the generated map.
-- **A rendered before/after**, same code path as the vanilla reference:
-
-```fish
-java -cp out pzformat.Probe render MAP_DIR "$PZ/media/texturepacks" CELL X Y 24 0 0 OUT.png
-```
-
-  Compare against `docs/vanilla_blend_tight.png`. Ground will still have hard
-  edges — masks are E9 — but the **scattered tan diamonds must be gone**,
-  replaced by coherent regions. If they are not, the region layer has not
-  worked and E9 will not save it.
+- Masks written, `assertNoEmptySquares` still passing.
+- **A rendered before/after** against `docs/e8_final.png` and
+  `docs/vanilla_blend_tight.png`, same code path.
+- `GroundCensus` over our own cells shows a **non-empty Q1** whose pairs match
+  the priority table, and **zero Q2 contradictions** — we author from a strict
+  table even though vanilla does not.
 
 ## Falsification
 
-Name, before building, what the render would look like if the region layer were
-broken but the code ran without error. Predict the island share your own dither
-pass produces and check it against vanilla's 19.97%.
+Predict the Q1 pair counts before running. Name what the render would look like
+if the mask pass ran without error but emitted the wrong offsets — hint: wrong
+corner offsets give visible notches at region corners, not a uniform change.
 
 ## Do not
 
-- **Do not re-measure the priority table.** CONFIRMED over 4,065 cells.
-- **Do not write mask tiles.** E9.
-- **Do not touch the tuft layer.** `GroundPalette`'s measured model is sound.
-  Rename its "overlay" to "tuft" in E9, not here — three meanings now collide.
-- Do not use `Probe findprop` for any rate or distribution. It caps at 3 hits.
+- Do not re-measure the priority table or the block contract.
+- Do not change `GroundRegions`' dither constants. They are fitted; refitting
+  belongs with E11, after region shape is settled.
 
 ---
 

@@ -832,6 +832,9 @@ Acting on any of these wastes real time.
 | The 16-tile mask block contract is uniform | **TRUE for natural ground only.** `blends_street_01` uses **8** masks per block, one variant set, not two. `Clay` uses 28 (§27). |
 | Indices 112–127 of `blends_natural_01` are an unidentified side-mask set | **They carry `FloorMaterial Clay`.** Why clay has 28 mask indices where every other natural material has 12 is still UNVERIFIED (§27). |
 | `Probe findprop` can measure a distribution | **FALSE.** Hard-capped at 3 hits per cell. It finds an example; it is never a census (§27). |
+| The GIS import carries land use (§22, §27) | **HALF TRUE, and the half that is false blocked E8.** `GisImport.Cover` is `{NONE, ROAD, BUILDING}`. Building footprints, road centrelines and a per-building occupancy class — no landcover. There is no evidence for multiple grass regions in open country, so E8 writes one (§28). |
+| Dither is a coherent noise field | **FALSE.** Matched-distance lift is 0.95–1.14 on the boundary contour across every material pair and filter window, on 8,000+ pairs. Adjacent squares are independent. The 5–10× lift further out is a different population — genuine small regions the majority filter smoothed away (§28). |
+| Vanilla's measured P(minority\|d) can be used directly as a flip probability | **FALSE.** They are different quantities: the measurement is the outcome after both sides of an edge have dithered. Using 0.27 as an input rate over-produced isolated squares 4×. The shipped profile is FITTED, not derived (§28). |
 
 Known-stale, not yet cleaned up: `TreeScatter` / `TreePalette` still place
 ~7,800 trees the engine deletes; `WorldGenOverride.lua` is still written and is
@@ -2262,3 +2265,139 @@ sheets carry it without `FloorMaterial`.
 `floors_burnt_01` carries `FloorMaterial Burnt` masks and participates in the
 priority system. Fire damage uses the blend vocabulary — a **third** consumer
 for E9's neighbour-rule engine, alongside ground and A3's wall-joining.
+
+---
+
+## 28. Ground regions and the dither law — E8, and the defect is fixed
+
+E8, 2026-08-14. **This chunk built.** The scattered tan diamonds that opened E3
+are gone; generated open country now reads as coherent grass with yards, verges
+and softened boundaries. Render: `docs/e8_final.png`.
+
+New code: `GroundMaterial`, `GroundRegions`, `DitherLaw` (read-only
+measurement). Changed: `GisCells` takes ground from the region layer.
+`GroundPalette` untouched — its tuft model is measured and sound.
+
+### Part 1 — the dither law is INDEPENDENT PER SQUARE
+
+§27 left this as the one measurement E8 needed. `DitherLaw` answered it.
+
+**CONFIRMED.** Matched-distance lift, `P(both minority) / P(minority|d)²`
+measured between adjacent squares **at equal signed distance** so a varying p
+cannot manufacture a correlation:
+
+| pair | window 5 | window 9 | window 15 |
+|---|---|---|---|
+| Dark/Medium | 1.125 / 1.102 | 0.935 / 1.023 | 0.956 / 0.950 |
+| Medium/Light | 1.137 / 1.100 | 1.012 / 1.007 | 0.947 / 0.956 |
+| Dark/Light | 1.381 / 1.636 | 1.198 / 1.022 | 0.948 / 0.985 |
+
+(x-adjacency / y-adjacency. They agree, so this is not a scan artifact.)
+
+On the boundary contour, on 8,000+ pairs against 200–600 in the tails,
+**adjacent squares are independent.** Two thirds of contour minority components
+are singletons, mean size 2.06.
+
+**The 5–10× lift at |d|>2 is a different population, not correlation.** A
+single correlated field cannot give ρ≈0 at p=0.46 and ρ≈0.7 at p=0.085 —
+mutually exclusive. Minority component size by distance settles it: 2.06 on the
+contour against 4–165 further out, with singletons falling from 66% to 0%.
+Those are **genuine small regions the majority filter smoothed away**, which is
+also why P floors at 0.03–0.05 at |d|=8 instead of decaying to zero.
+
+**So: no noise field.** Distance transform from the region edge, one Bernoulli
+draw per square.
+
+**Two failed approaches, recorded because both looked right.** The first
+independence test pooled run-lengths across d=−8..+8 where p ranges 0.02–0.32;
+a mixture of p values produces excess long runs *and* a deficit of k=1 runs
+(observed ratios 0.65–0.84 at k=1) even under perfect independence. It could not
+distinguish correlation from varying p. The profile is also strongly
+filter-dependent — P(minority) at d=0 runs 0.318 → 0.421 → 0.455 across windows
+5/9/15 — so **band width is UNVERIFIED** and only bracketed.
+
+### Part 2 — what was built, and what the data would not support
+
+`GisImport.Cover` is `{NONE, ROAD, BUILDING}`. **There is no landcover import.**
+§22 and §27 both say "the import already carries land use"; that is true of
+developed surfaces and false of everything else. So:
+
+| source | material | evidence |
+|---|---|---|
+| `NONE` far from anything | `Grass_Dark` | the 58.6% majority; one region |
+| within 3 of `BUILDING` | `Sand` | §26 Q4 — 42_40's mid-cell Sand is a fenced yard between a road and a shed |
+| within 2 of `ROAD` | `Grass_Medium` | §26 — Medium appears as a verge at 42_40 (60,200) |
+
+**Multiple grass regions across open country are unbuilt for want of data, not
+by choice.** A noise field would be inventing a driver E3 ruled out and §27 left
+unsupported. Owner decision 2026-08-14.
+
+`YARD = 3` and `VERGE = 2` are **guesses**, isolated as constants. The only
+evidence is one hand-authored lot.
+
+**Seeding.** `GisCells` seeds its `Random` per cell so a cell regenerates
+identically regardless of its neighbours. The dither flip is therefore driven by
+a **position hash**, not that sequential `Random` — otherwise the same world
+square dithers differently depending on which cell is written, and every cell
+border becomes a seam.
+
+### The dither rate is FITTED, not derived
+
+Vanilla's measured P(minority|d) cannot be used as an input flip probability —
+different quantities. Four data points, cell 200_200, against vanilla 42_40:
+
+| P[0] | 1 nbr | 2 nbr | 3 nbr | 4 nbr |
+|---|---|---|---|---|
+| **vanilla** | **53.6%** | **37.8%** | **7.3%** | **1.3%** |
+| 0.00 | 63.0% | 36.6% | 0.3% | 0.0% |
+| 0.06 (shipped) | 56.4% | 35.9% | 5.4% | 2.2% |
+| 0.14 | 52.8% | 34.2% | 9.2% | 3.9% |
+| 0.27 (derived) | 47.5% | 34.0% | 12.7% | 5.8% |
+
+Shipped: `P = {0.06, 0.03, 0.01, 0.005}`.
+
+**Strongly sublinear** — 0→0.14 buys 3.9 points of 4-neighbour, 0.14→0.27 only
+1.9 more. Saturation: once a boundary square has flipped there is nowhere new
+to go.
+
+**There is no geometric floor.** P=0 gives 0.0% 4-neighbour and one island in
+65,536 squares, refuting the prediction that yard corners and the road diagonal
+would produce isolates on their own.
+
+### OPEN — the shape mismatch we cannot tune away
+
+**Vanilla's 3-neighbour and 4-neighbour targets cannot be hit simultaneously.**
+The shipped profile straddles them: 5.4% against 7.3%, and 2.2% against 1.3%.
+Every rate over-produces true isolates relative to 3-neighbour squares.
+
+That is a **shape** difference, not a rate. Vanilla's minority squares form
+short chains along the contour (mean component 2.06, two-thirds singletons);
+ours are pure independent draws, which give proportionally more isolates.
+**Lift ≈ 1.0 at d=0 is a weaker claim than matching the component-size
+distribution**, and the gap between those two claims is exactly this residual.
+
+**Check for a future session:** compare our minority component-size histogram
+against vanilla's directly, rather than the differing-neighbour histogram. If
+vanilla's chains come from its regions being hand-painted with softer shapes
+than our geometric buffers, the fix is region shape, not dither.
+
+### Predictions that failed, all four
+
+Recorded because Charter §4 says a test that cannot fail proves nothing, and
+because the ones that failed were the ones that taught something.
+
+1. **Dither is a noise field.** Refuted — lift ≈ 1.0 at the contour.
+2. **The band runs 3–5 squares.** Unscoreable; the profile is filter-dependent.
+3. **Halving P halves the islands.** It moved 5.8% → 3.9%. Sublinear.
+4. **A geometric floor of ~2.5% exists.** P=0 gives 0.0%.
+
+What survived every check was the independence result. The rate is a curve fit
+to four points and should be labelled as such wherever it is used.
+
+### Verified numerically, not by eye
+
+The difference between P=0.27 and P=0.06 is **barely visible in the render**
+while the census channels moved by a factor of three. Tuning ground by eye would
+not have found this. `GroundCensus` run against our own output is the check that
+works; use it.
+
