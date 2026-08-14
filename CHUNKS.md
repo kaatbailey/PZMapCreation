@@ -124,10 +124,10 @@ now:
 **E9 → A2-gate → B1 → B2 → C1**, with E10, E11 and A3-pre1/pre2 available as
 small fillers at any point.
 
-**E3 first** because ground appearance is the most immersion-breaking defect
-on the generated map (owner, 2026-08-11) and because it is an investigation,
-not a build — the same shape as B1, which the charter's method section says
-should come before code.
+**E3 first (RESOLVED 2026-08-14 — E3, E7 and E8 are closed and the ground defect is fixed; kept as the record of why this line of work came first.)** Ground appearance was the most immersion-breaking defect on the
+generated map (owner, 2026-08-11), and E3 was an investigation rather than a
+build — the same shape as B1, which the charter's method section says should
+come before code.
 
 **A2-gate second** because it is cheap, it unblocks or kills A2a, and leaving
 a blocked chunk in the index invites a future session to start it anyway.
