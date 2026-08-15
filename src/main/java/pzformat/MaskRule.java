@@ -46,7 +46,10 @@ import java.util.Set;
 public final class MaskRule {
 
     public enum Dir {
-        N(0, -1, 0), W(1, 0, -1), E(2, 1, 0), S(3, 0, 1);
+        // ord, dx, dy. Grid convention: +x East, +y South (STATE §10).
+        // N and W were transposed here once; the self-test below now asserts
+        // this table rather than trusting it.
+        N(0, 0, -1), W(1, -1, 0), E(2, 1, 0), S(3, 0, 1);
 
         /** Offset within a variant set: B+8+ord for set 1, B+12+ord for set 2. */
         public final int ord;
@@ -139,6 +142,28 @@ public final class MaskRule {
 
     public static void main(String[] args) {
         int pass = 0, fail = 0;
+
+        // Direction vectors, asserted against the grid convention. The
+        // set-to-offset cases below all passed while N and W were transposed,
+        // because they never exercise the neighbour lookup. This does.
+        int[][] want = {{0, -1}, {-1, 0}, {1, 0}, {0, 1}};   // N, W, E, S
+        Dir[] order = {Dir.N, Dir.W, Dir.E, Dir.S};
+        boolean dirsOk = true;
+        for (int i = 0; i < 4; i++) {
+            Dir d = order[i];
+            boolean ok = d.dx == want[i][0] && d.dy == want[i][1] && d.ord == i;
+            if (!ok) dirsOk = false;
+            System.out.printf("%-22s %s  dx=%d dy=%d ord=%d%n",
+                    "dir " + d, ok ? "PASS" : "FAIL", d.dx, d.dy, d.ord);
+        }
+        for (Dir d : Dir.values()) {
+            if (d.opposite().dx != -d.dx || d.opposite().dy != -d.dy) {
+                dirsOk = false;
+                System.out.println("dir opposite            FAIL " + d + " vs " + d.opposite());
+            }
+        }
+        if (!dirsOk) fail++;
+        pass++;
 
         // (116,200) Grass_Medium base, Grass_Dark to the E only.
         // Vanilla wrote _26 at y=199,200 and _30 at y=201 — both variants of

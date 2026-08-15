@@ -106,8 +106,17 @@ public final class GroundRegions {
             for (int j = 0; j < n; j++) {
                 int gx = ox - m + i, gy = oy - m + j;
                 GisImport.Cover c = coverAt(g, gx, gy);
-                if (c == GisImport.Cover.BUILDING || c == GisImport.Cover.ROAD)
-                    continue;              // null: GisCells writes its own tile
+                if (c == GisImport.Cover.BUILDING)
+                    continue;              // null: interior, never blends
+                if (c == GisImport.Cover.ROAD) {
+                    // The road joins the array so neighbouring grass can mask
+                    // onto it (§27: Grass_Dark > Road_04 at n=284,583).
+                    // GisCells still writes the road tile itself; this is only
+                    // for the neighbour rule. Must match the tile GisCells
+                    // writes — blends_street_01_0 is block 0, i.e. Road_01.
+                    wide[i][j] = GroundMaterial.ROAD_01;
+                    continue;
+                }
                 if (dB[i][j] <= YARD) wide[i][j] = GroundMaterial.SAND;
                 else if (dR[i][j] <= VERGE) wide[i][j] = GroundMaterial.GRASS_MEDIUM;
                 else wide[i][j] = GroundMaterial.GRASS_DARK;
@@ -163,8 +172,9 @@ public final class GroundRegions {
         // 2 variant sets: blends_natural_01 carries B+8..11 and B+12..15.
         // blends_street_01 has only one and would take 1 here (§27).
         for (Map.Entry<GroundMaterial, EnumSet<MaskRule.Dir>> e : byMat.entrySet())
-            for (int idx : MaskRule.masks(e.getKey().block, e.getValue(), 2, rng))
-                stack.add(cell.tileIndex(GroundPalette.BASE_SHEET + idx));
+            for (int idx : MaskRule.masks(e.getKey().block, e.getValue(),
+                                          e.getKey().variantSets, rng))
+                stack.add(cell.tileIndex(e.getKey().sheet + idx));
     }
 
     /**
@@ -188,7 +198,13 @@ public final class GroundRegions {
                 if (d < 0 || d >= P.length) continue;
                 if (hash01(ox + x, oy + y, seed) >= P[d]) continue;
                 GroundMaterial other = across[x][y];
-                if (other != null && other != src[x][y]) mat[x][y] = other;
+                if (other == null || other == src[x][y]) continue;
+                // Never dither across a road boundary. Roads are in the array
+                // so grass can MASK onto them; interleaving them would put
+                // grass squares in the carriageway and road squares in the
+                // field. A road edge is a hard edge, softened by masks only.
+                if (isRoad(other) || isRoad(src[x][y])) continue;
+                mat[x][y] = other;
             }
     }
 
@@ -280,6 +296,11 @@ public final class GroundRegions {
         h ^= h >>> 33; h *= 0xC4CEB9FE1A85EC53L;
         h ^= h >>> 33;
         return (h >>> 11) * 0x1.0p-53;
+    }
+
+    /** Roads take part in masking but never in dither. */
+    static boolean isRoad(GroundMaterial m) {
+        return m != null && m.sheet.equals(GroundMaterial.STREET);
     }
 
     static final int[] DX = {0, 0, -1, 1};

@@ -138,6 +138,13 @@ public final class GisCells {
                                 case BUILDING -> stack.add(intIdx);
                                 case ROAD -> {
                                     stack.add(roadIdx);
+                                    // Grass outranks road (§27), so the grass
+                                    // mask belongs on THIS square, not on the
+                                    // grass one. Without this the road edge
+                                    // stays hard and the census reports no
+                                    // road pairs at all.
+                                    GroundRegions.addMasks(stack, cell, region,
+                                            x, y, region[x + 1][y + 1], rng);
                                     long d = (long) (x - 128) * (x - 128)
                                             + (long) (y - 128) * (y - 128);
                                     if (d < roadBest) {
