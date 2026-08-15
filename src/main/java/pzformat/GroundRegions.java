@@ -67,7 +67,7 @@ public final class GroundRegions {
     public static final double[] P = {0.06, 0.03, 0.01, 0.005};
 
     /** How far a yard extends from a building footprint, in squares. */
-    public static final int YARD = 3;
+    public static final int YARD = 1;
 
     /** How far a verge extends from a road, in squares. */
     public static final int VERGE = 2;
