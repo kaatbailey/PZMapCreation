@@ -84,8 +84,9 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 | `[x]` | **E1** Write zombie density into `chunkGrid` | — | **DONE 2026-08-11, confirmed in game** (STATE §23) |
 | `[ ]` | **E2** Calibrate density values | E1 | Values by occupancy class, not one constant |
 | `[x]` | **E3** Ground blending investigation | — | **CLOSED 2026-08-13. Mechanism CONFIRMED** (STATE §26, `docs/E3_GROUND_BLENDING.md`) |
-| `[ ]` | **E4** Scene rotation pass | §17 (resolved) | Footprints axis-aligned before rasterizing |
-| `[ ]` | **E5** `FootprintSnap` | E4 | **Shared with the editor** — refuses off-axis footprints |
+| | **E4** Scene rotation pass | — | **RETIRED 2026-08-14.** Premise fails and it was never needed (STATE §30) |
+| `[ ]` | **E5** `FootprintSnap` | — | **Shared with the editor.** Axis-aligned rectangle of matching area; jaggedness cannot occur |
+| `[ ]` | **E13** Interior subdivision | E5 | Typed rooms per building from vanilla's vocabulary. We write 1 box; vanilla writes a cluster |
 | `[ ]` | **E6** Extract `BiomeMapWriter` distance banding | — | Small. Three consumers want a region signal |
 | `[x]` | **E7** Ground precedence and dither generality | E3 | **CLOSED 2026-08-13. Priority table CONFIRMED** over 4,065 cells (STATE §27, `docs/E7_GROUND_PRECEDENCE.md`) |
 | `[x]` | **E8** Region layer and the dither law | E7 | **CLOSED 2026-08-14. The scattered-diamond defect is FIXED** (STATE §28, `docs/e8_final.png`) |
@@ -94,7 +95,7 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 | `[ ]` | **E11** Region shape | E9 | Yards read as an 8-10 square apron; vanilla's minority squares form chains, ours are isolates |
 | `[ ]` | **E12** Diagonal mask clause | E9 | Small. Extend `MaskAudit` to record diagonal geometry first |
 
-**E9 is the second charter §2 test, and E5 the first:** a GIS feature the editor needs
+**E9 was the second charter §2 test, and E5 remains the first:** a GIS feature the editor needs
 regardless of who authors the tiles. E4 exists to serve it.
 
 ### Suggested order
@@ -863,7 +864,7 @@ store chosen. Shapes only:
 
 ---
 
-## E2 / E4 / E5 / E6 / E10 / E11 / E12 — stubs
+## E2 / E4 / E5 / E6 / E10 / E11 / E12 / E13 — stubs
 
 - **E2 Calibrate density.** 2 near buildings is at the low end of vanilla's
   0–10 range, and seven buildings is a hamlet, not a town. The import already
@@ -872,22 +873,45 @@ store chosen. Shapes only:
   prefer the engine's spawn code to measuring Muldraugh. **Do not sample the
   vanilla histogram per chunk:** it is a frequency measurement, and density
   clusters around habitation.
-- **E4 Scene rotation pass.** Room rects are `x, y, w, h` with no rotation
-  field, so off-axis footprints are unrepresentable, not merely ugly. Take
-  each footprint's min-area-rect angle mod 90°, histogram weighted by area,
-  rotate the **whole scene** — buildings, roads, area polygon — by the
-  dominant mode before rasterizing, then snap residuals to 90°. Per-footprint
-  alignment is wrong: it squares each building against itself and randomises
-  them against each other and the roads. **Store the rotation angle with the
-  import; do not discard it** — `worldmap.xml` and any GIS overlay need it.
-  Predict the histogram shape first: a grid town should show one mode holding
-  over half the footprint area within ±3°; flat or bimodal means no single
-  grid and whole-scene rotation is wrong for that area.
+- **E4 Scene rotation pass. RETIRED 2026-08-14 (STATE §30.)** The premise was
+  that a dominant building grid exists and the scene should be rotated onto
+  it. `FootprintAngles` measured the current import: 7 footprints at 37, 61,
+  65, 71, 76, 80°, best ±3° window holding **33.3%** of area against the
+  predicted "well over half". The falsifier fired exactly as §17 wrote it.
+  Rural parcels each square to their own driveway; there is no street grid
+  because there is no street. **And it was never needed:** a room is
+  `x, y, w, h` with no rotation field, so the target orientation is 0° —
+  known in advance, not discoverable. There is nothing to rotate *to*.
+  Kept as the record of a prediction that failed usefully. Whole-scene
+  rotation may still suit a dense grid town; nothing in the E-track needs it.
 - **E5 `FootprintSnap`.** One module, two callers: GIS import and interactive
-  authoring. **Refuses off-axis footprints rather than warning** — §17 is
-  resolved (see below). The editor side is snap-to-90° on rectangle tools;
-  the enforcement point is A4's "wall run not expressible as a room rect",
-  which catches hand-painted zigzags and imported data alike.
+  authoring. Takes a footprint, returns an **axis-aligned rectangle of
+  matching area at the same location**, tagged with the occupancy class the
+  import already carries. **Jaggedness cannot occur, because every edge is
+  axis-parallel by construction** — it is the symptom of an off-axis edge,
+  not a defect in its own right, which is why the road's straight runs are
+  clean and only its diagonals stair-step.
+  **Outline fidelity is deliberately discarded.** STATE §30: 93% of vanilla
+  rooms are ≤3 rects and 64.5% are exactly one, so tracing a real GIS polygon
+  would produce buildings *more* complex than vanilla's. The bounding box is
+  closer to vanilla than the truth is.
+  The editor side is snap-to-90° on rectangle tools; the enforcement point is
+  A4's "wall run not expressible as a room rect", which catches hand-painted
+  zigzags and imported data alike.
+  **Run §30's open check 1 first:** is the axis constraint hard, or a strong
+  default with an override? A correct detector looks for a **run** of rects
+  each stepping consistently in one direction — the first attempt fired on any
+  two thin rects offset by 1 on both axes, which is every L-shaped closet, and
+  its 1,334 "diagonal runs" were false positives. The answer decides whether
+  the snap may refuse off-axis input outright.
+- **E13 Interior subdivision.** STATE §30: we write **8 rooms for 7
+  buildings**, one open box each, where vanilla writes a cluster — bathroom,
+  bedroom, livingroom, kitchen, closet. That is what makes a building read as
+  a building, and it is what "drop a real building of the right type on the
+  footprint" actually requires. The type vocabulary is already measured
+  (§30). **Not yet measured: rooms per building and which types co-occur** —
+  `LotHeader` rooms carry no building id, so it needs a clustering pass over
+  adjacent rooms sharing walls, or reading `objects.lua` (A7).
 - **E6 Extract `BiomeMapWriter` distance banding.** Currently inline in the
   pixel loop and discarded. It is a pure function of `dist[gx][gy]` plus a
   bounds check, so extraction is small, and three consumers want a region

@@ -843,6 +843,8 @@ Acting on any of these wastes real time.
 | The 16-tile mask block contract is uniform | **TRUE for natural ground only.** `blends_street_01` uses **8** masks per block, one variant set, not two. `Clay` uses 28 (§27). |
 | Indices 112–127 of `blends_natural_01` are an unidentified side-mask set | **They carry `FloorMaterial Clay`.** Why clay has 28 mask indices where every other natural material has 12 is still UNVERIFIED (§27). |
 | `Probe findprop` can measure a distribution | **FALSE.** Hard-capped at 3 hits per cell. It finds an example; it is never a census (§27). |
+| §17: rotate the whole scene by the dominant footprint angle before rasterizing | **PREMISE FAILS on rural data, and is unnecessary anyway.** `FootprintAngles` over the current import: 7 footprints at 37, 61, 65, 71, 76, 80°, best ±3° window holding **33.3%** of area against §17's predicted "well over half". Scattered farmsteads each face their own driveway; there is no street grid because there is no street. And the target angle never needed discovering — see §30. |
+| `RoomShapes` found 1,334 diagonal runs in vanilla, so §17's check 1 is answered | **FALSE — those are false positives and check 1 is still OPEN.** The detector fired on any two thin rects offset by 1 on both axes, which is every L-shaped closet: `[186,185 3x1]` then `[185,186 4x1]` is axis-aligned with a jog, not a diagonal. A real staircase is a **run** of rects each stepping consistently in the same direction, not a pair (§30). |
 | Every block in a sheet has four solid variants | **FALSE for roads.** `blends_natural_01` does, all seven blocks. In `blends_street_01`, `Road_01` and `Road_02` have only **two** — B+6 and B+7 are spriteless. Solids must be listed per material, not computed (§29). |
 | A passing self-test means the mask rule is implemented correctly | **INSUFFICIENT.** `MaskRule`'s self-test passed 8/8 with N and W transposed, because it never exercises the neighbour lookup. Point `MaskAudit` at our own output instead — it reads the map we wrote and checks masks against our neighbours (§29). |
 | The generated road is too wide | **FALSE — it is 7 squares, exactly what `roadWidth("S1400") = 3` specifies.** Asserted three times from renders and refuted by one column count. The isometric projection makes a diagonal strip read far wider than it is (§29). |
@@ -2542,4 +2544,123 @@ class `S1400` ("Co Hwy 26", half-width 3).
    it yet.
 4. The buildings are black slabs with no roof or interior detail — `TilePalette`
    writes one interior floor tile and nothing above. A-track, untouched here.
+
+
+---
+
+## 30. Building footprints — orientation is not a measurement problem
+
+2026-08-14, following E9. Measured with two new read-only classes,
+`FootprintAngles` and `RoomShapes`. No code changed.
+
+### The reframe: the target angle is known in advance
+
+§10: a room is a union of `int32 x, y, w, h` rectangles. No rotation field, no
+polygon, no vertex list. So **every wall runs due north-south or east-west,
+and the target orientation is 0° — fixed by the format, not discoverable from
+data.**
+
+An axis-aligned edge lands exactly on the tile grid: no rounding, no steps.
+**Jaggedness is not a defect in its own right, it is the SYMPTOM of an off-axis
+edge.** The generated road demonstrates both halves — its straight runs are
+perfectly clean and only its diagonal stretches stair-step.
+
+Shape is free. L-shapes, T-shapes, wings and courtyards are all representable
+as unions of rectangles. **Edge direction is not.**
+
+This retires §17's search for a dominant grid. There is nothing to rotate *to*.
+
+### §17's whole-scene rotation fails on this data anyway
+
+`FootprintAngles` computes each footprint's minimum-area rectangle by rotating
+calipers over its convex hull, takes the angle mod 90° (a rectangle's
+orientation is 90°-periodic), and histograms area-weighted.
+
+| # | angle | area m² | w × h m |
+|---|---|---|---|
+| 0 | 76.16 | 122 | 12.3 × 9.9 |
+| 1 | 37.08 | 158 | 16.1 × 9.9 |
+| 2 | 71.15 | 173 | 23.5 × 7.4 |
+| 3 | 37.79 | 219 | 14.9 × 14.8 |
+| 4 | 65.05 | 76 | 12.3 × 6.2 |
+| 5 | 61.18 | 301 | 22.2 × 13.6 |
+| 6 | 80.27 | 341 | 19.8 × 17.2 |
+
+Best ±3° window: **33.3%** of footprint area. §17 predicted "well over half"
+for a grid town. **The prediction failed and the falsifier fired as written** —
+flat means no single grid.
+
+The reason is not a flaw in the method: at 39.05N 83.64W this is rural Ohio,
+seven farmsteads over 1,391 m², each building squared to its own parcel. §17's
+prediction was about a town and this is not one. **Whole-scene rotation may
+still be right for a dense grid town; it is wrong here, and it is unnecessary
+everywhere, because 0° is known in advance.**
+
+`FootprintAngles` warns below 30 footprints. Three agreeing by chance looks
+exactly like a grid.
+
+### Vanilla's shape vocabulary — CONFIRMED over 90,827 rooms
+
+`RoomShapes` over all 4,065 Muldraugh cells, reading lotheaders only:
+
+| rects per room | share |
+|---|---|
+| 1 | **64.5%** |
+| 2 | 18.7% |
+| 3 | 9.7% |
+| 4 | 4.1% |
+| 5+ | 2.9% |
+
+**93% of vanilla rooms are three rectangles or fewer.** Fill ratio (summed rect
+area over bounding box) has median **1.000**, p10 0.714, and **64.5% are
+exactly 1.000** — a plain rectangle.
+
+**So faithfully tracing a real GIS outline would produce buildings MORE complex
+than vanilla's.** An axis-aligned bounding box of the right area is closer to
+what vanilla does than the true polygon would be. This is the finding that
+decides how the snap works.
+
+Bounding boxes are small: 1-4 × 1-4 dominates at 43,529, then 5-8 × 5-8 at
+16,260. These are interior rooms — closets, bathrooms — not buildings.
+
+### The type vocabulary is already enumerated
+
+Room names across Muldraugh, by count: `bathroom` 16126, `bedroom` 11375,
+`livingroom` 11222, `kitchen` 7725, `empty` 5704, `closet` 5397,
+**`emptyoutside` 5242**, `office` 3976, `hall` 3749, `garagestorage` 1496,
+`kidsbedroom` 1483, `derelict` 1339, `laundry` 1197, `janitor` 802,
+`motelroom` 715, `diningroom` 694, `storageunit` 668, `garage` 588.
+
+`emptyoutside` at 5,242 confirms §26 Q4: **yards are authored as rooms**, which
+matters when we synthesise one around a building.
+
+### The real gap is interior subdivision, not orientation
+
+We write **8 rooms for 7 buildings** — one open box each. Vanilla writes a
+cluster per building: bathroom, bedroom, livingroom, kitchen, closet. That is
+what makes a building read as a building, and it is what "drop a real building
+of the right type on the footprint" actually requires.
+
+### So the snap is not a rotation
+
+Given the above, `FootprintSnap` takes a GIS footprint and returns an
+**axis-aligned rectangle of matching area at the same location**, tagged with
+the occupancy class the import already carries (`Agriculture`, `Residential`).
+Orientation is 0° by construction, so jaggedness cannot occur. Outline fidelity
+is deliberately discarded because vanilla has less of it than the source data
+does.
+
+### OPEN
+
+1. **§17 check 1 is still unanswered.** Is the axis constraint hard or a strong
+   default with an override? A correct detector looks for a **run** of rects
+   each stepping consistently in one direction, not a pair of thin rects.
+   Decides whether the snap may refuse off-axis input outright.
+2. **Rooms per building, and which types co-occur.** A `Residential` recipe is
+   bedroom + bathroom + kitchen + livingroom; `Agriculture` is something else.
+   This is the subdivision recipe and it has not been measured. `LotHeader`
+   rooms carry no building id, so it needs a clustering pass — adjacent rooms
+   sharing walls — or reading `objects.lua`.
+3. **Room size targets.** Our footprints are 76–341 m² at one square per metre;
+   vanilla's building bounding boxes have not been measured, only its rooms'.
 
