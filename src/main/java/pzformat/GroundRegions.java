@@ -1,6 +1,11 @@
 package pzformat;
 
 import java.util.ArrayDeque;
+import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
 
 /**
  * Assigns one ground material per square, then dithers the boundaries.
@@ -84,32 +89,82 @@ public final class GroundRegions {
      *             of which cell is being written
      */
     public static GroundMaterial[][] build(GisImport g, int ox, int oy, long seed) {
-        GroundMaterial[][] mat = new GroundMaterial[256][256];
+        // Work over a margin so distances are correct right to the cell edge,
+        // then hand back the cell plus a one-square border. Squares in the
+        // border belong to the neighbouring cell; because the dither is a
+        // position hash rather than a sequential draw, that cell computes the
+        // same material for them and the masks either side of a cell boundary
+        // agree.
+        final int m = MARGIN;
+        final int n = 256 + 2 * m;
 
-        // Distance to the nearest BUILDING and nearest ROAD, computed on a
-        // margin so squares near this cell's edge see structures in the next
-        // cell. Without the margin every cell border grows a false region edge.
-        int margin = Math.max(YARD, VERGE) + P.length + 1;
-        int[][] dB = coverDistance(g, ox, oy, margin, GisImport.Cover.BUILDING);
-        int[][] dR = coverDistance(g, ox, oy, margin, GisImport.Cover.ROAD);
+        int[][] dB = coverDistance(g, ox, oy, m, GisImport.Cover.BUILDING);
+        int[][] dR = coverDistance(g, ox, oy, m, GisImport.Cover.ROAD);
 
-        for (int x = 0; x < 256; x++)
-            for (int y = 0; y < 256; y++) {
-                int gx = ox + x, gy = oy + y;
+        GroundMaterial[][] wide = new GroundMaterial[n][n];
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++) {
+                int gx = ox - m + i, gy = oy - m + j;
                 GisImport.Cover c = coverAt(g, gx, gy);
-                if (c == GisImport.Cover.BUILDING || c == GisImport.Cover.ROAD) {
-                    mat[x][y] = null;      // GisCells writes its own tile here
-                    continue;
-                }
-                int b = dB[x + margin][y + margin];
-                int r = dR[x + margin][y + margin];
-                if (b <= YARD) mat[x][y] = GroundMaterial.SAND;
-                else if (r <= VERGE) mat[x][y] = GroundMaterial.GRASS_MEDIUM;
-                else mat[x][y] = GroundMaterial.GRASS_DARK;
+                if (c == GisImport.Cover.BUILDING || c == GisImport.Cover.ROAD)
+                    continue;              // null: GisCells writes its own tile
+                if (dB[i][j] <= YARD) wide[i][j] = GroundMaterial.SAND;
+                else if (dR[i][j] <= VERGE) wide[i][j] = GroundMaterial.GRASS_MEDIUM;
+                else wide[i][j] = GroundMaterial.GRASS_DARK;
             }
 
-        dither(mat, ox, oy, seed);
-        return mat;
+        dither(wide, ox - m, oy - m, seed);
+
+        GroundMaterial[][] out = new GroundMaterial[258][258];
+        for (int x = 0; x < 258; x++)
+            System.arraycopy(wide[m - 1 + x], m - 1, out[x], 0, 258);
+        return out;
+    }
+
+    /**
+     * Computation margin. Only distances below P.length matter to the dither,
+     * so 8 leaves ample headroom for the region assignment and the edge
+     * distance transform to be correct across the whole returned window.
+     */
+    static final int MARGIN = 8;
+
+    /**
+     * Append this square's blend masks to its tile stack.
+     *
+     * For each distinct neighbouring material that OUTRANKS this square's, the
+     * mask rule runs independently and the results concatenate — §27 confirmed
+     * multi-material squares are common in vanilla, with no interaction
+     * observed between the sets.
+     *
+     * Call AFTER the solid tile and BEFORE the tuft: the solid must be first in
+     * the stack or getFloor() and cleanChunk read the wrong tile (§26).
+     *
+     * @param region bordered array from {@link #build}, so cell-local (x,y) is
+     *               {@code region[x+1][y+1]} and a neighbour off the cell edge
+     *               resolves to the adjacent cell's material rather than
+     *               falling off the array
+     * @param x      cell-local x, 0..255
+     * @param y      cell-local y, 0..255
+     * @param self   this square's material
+     */
+    public static void addMasks(List<Integer> stack, CellData cell,
+                                GroundMaterial[][] region, int x, int y,
+                                GroundMaterial self, Random rng) {
+        if (self == null) return;
+        EnumMap<GroundMaterial, EnumSet<MaskRule.Dir>> byMat =
+                new EnumMap<>(GroundMaterial.class);
+
+        for (MaskRule.Dir d : MaskRule.Dir.values()) {
+            GroundMaterial other = region[x + 1 + d.dx][y + 1 + d.dy];
+            if (other == null || !other.outranks(self)) continue;
+            byMat.computeIfAbsent(other, k -> EnumSet.noneOf(MaskRule.Dir.class)).add(d);
+        }
+
+        // 2 variant sets: blends_natural_01 carries B+8..11 and B+12..15.
+        // blends_street_01 has only one and would take 1 here (§27).
+        for (Map.Entry<GroundMaterial, EnumSet<MaskRule.Dir>> e : byMat.entrySet())
+            for (int idx : MaskRule.masks(e.getKey().block, e.getValue(), 2, rng))
+                stack.add(cell.tileIndex(GroundPalette.BASE_SHEET + idx));
     }
 
     /**
@@ -119,14 +174,15 @@ public final class GroundRegions {
      * edge, not a growth process.
      */
     static void dither(GroundMaterial[][] mat, int ox, int oy, long seed) {
-        GroundMaterial[][] src = new GroundMaterial[256][256];
-        for (int x = 0; x < 256; x++) System.arraycopy(mat[x], 0, src[x], 0, 256);
+        final int n = mat.length;
+        GroundMaterial[][] src = new GroundMaterial[n][n];
+        for (int x = 0; x < n; x++) System.arraycopy(mat[x], 0, src[x], 0, n);
 
-        GroundMaterial[][] across = new GroundMaterial[256][256];
+        GroundMaterial[][] across = new GroundMaterial[n][n];
         int[][] dist = edgeDistance(src, across);
 
-        for (int x = 0; x < 256; x++)
-            for (int y = 0; y < 256; y++) {
+        for (int x = 0; x < n; x++)
+            for (int y = 0; y < n; y++) {
                 if (src[x][y] == null) continue;
                 int d = dist[x][y];
                 if (d < 0 || d >= P.length) continue;
@@ -147,15 +203,16 @@ public final class GroundRegions {
      * scan can make once regions are narrow.
      */
     static int[][] edgeDistance(GroundMaterial[][] m, GroundMaterial[][] across) {
-        int[][] d = new int[256][256];
+        final int n = m.length;
+        int[][] d = new int[n][n];
         for (int[] row : d) java.util.Arrays.fill(row, -1);
         ArrayDeque<int[]> q = new ArrayDeque<>();
-        for (int x = 0; x < 256; x++)
-            for (int y = 0; y < 256; y++) {
+        for (int x = 0; x < n; x++)
+            for (int y = 0; y < n; y++) {
                 if (m[x][y] == null) continue;
                 for (int k = 0; k < 4; k++) {
                     int nx = x + DX[k], ny = y + DY[k];
-                    if (nx < 0 || ny < 0 || nx > 255 || ny > 255) continue;
+                    if (nx < 0 || ny < 0 || nx >= n || ny >= n) continue;
                     if (m[nx][ny] != null && m[nx][ny] != m[x][y]) {
                         d[x][y] = 0;
                         across[x][y] = m[nx][ny];
@@ -168,7 +225,7 @@ public final class GroundRegions {
             int[] p = q.poll();
             for (int k = 0; k < 4; k++) {
                 int nx = p[0] + DX[k], ny = p[1] + DY[k];
-                if (nx < 0 || ny < 0 || nx > 255 || ny > 255) continue;
+                if (nx < 0 || ny < 0 || nx >= n || ny >= n) continue;
                 if (m[nx][ny] == null || d[nx][ny] >= 0) continue;
                 d[nx][ny] = d[p[0]][p[1]] + 1;
                 across[nx][ny] = across[p[0]][p[1]];

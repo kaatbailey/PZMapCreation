@@ -39,11 +39,7 @@ import java.util.Set;
 public final class GroundPalette {
 
     public static final String BASE_SHEET = "blends_natural_01_";
-    public static final String TUFT_SHEET = "blends_grassoverlays_01_";
-    // NOTE the sheet keeps TIS's spelling. We renamed our own
-    // identifiers from "overlay" to "tuft"; the tileset is theirs and
-    // is still called blends_grassoverlays_01. A blind rename ate this
-    // literal once already and silently zeroed the tuft layer.
+    public static final String TUFT_SHEET = "blends_grasstufts_01_";
 
     /**
      * @param indices     the four variants, chosen between uniformly

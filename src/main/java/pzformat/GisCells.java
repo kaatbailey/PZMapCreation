@@ -29,7 +29,7 @@ import java.util.Set;
  *     WorldGenChunk hands the whole chunk to genRandomChunk. Squares outside
  *     the raster are therefore FILLED, not skipped.
  *   - spawnpoints.lua uses the legacy 300-tile cell grid, not B42's 256.
- *   - Ground is a weighted mix with a partial overlay layer, not one tile.
+ *   - Ground is a weighted mix with a partial tuft layer, not one tile.
  *     See GroundPalette; one flat tile is what made generated land read as a
  *     rectangle against its procedurally generated surroundings.
  */
@@ -79,7 +79,7 @@ public final class GisCells {
         Files.createDirectories(mapDir);
 
         int written = 0;
-        long totalRooms = 0, totalSquares = 0, totalEdgeFill = 0, totalOverlays = 0;
+        long totalRooms = 0, totalSquares = 0, totalEdgeFill = 0, totalTufts = 0;
         List<int[]> spawns = new ArrayList<>();
 
         for (int cy = 0; cy < cellsY; cy++) {
@@ -107,7 +107,7 @@ public final class GisCells {
                 // neighbours are written — same contract as `rng` above.
                 GroundMaterial[][] region = GroundRegions.build(g, ox, oy, SEED);
 
-                int squares = 0, edgeFilled = 0, overlays = 0;
+                int squares = 0, edgeFilled = 0, tufts = 0;
                 int[] roadSpawn = null;
                 long roadBest = Long.MAX_VALUE;
 
@@ -123,13 +123,14 @@ public final class GisCells {
                             // empty would flip the whole 8x8 chunk to
                             // procedural generation, discarding anything
                             // authored in it.
-                            GroundMaterial m = region[x][y];
+                            GroundMaterial m = region[x + 1][y + 1];
                             if (m == null) m = GroundMaterial.GRASS_DARK;
                             stack.add(cell.tileIndex(m.solid(rng)));
+                            GroundRegions.addMasks(stack, cell, region, x, y, m, rng);
                             GroundPalette.Ground gr = ground.roll(rng);
-                            if (gr.overlay() != null) {
-                                stack.add(cell.tileIndex(gr.overlay()));
-                                overlays++;
+                            if (gr.tuft() != null) {
+                                stack.add(cell.tileIndex(gr.tuft()));
+                                tufts++;
                             }
                             edgeFilled++;
                         } else {
@@ -145,16 +146,18 @@ public final class GisCells {
                                     }
                                 }
                                 default -> {
-                                    GroundMaterial m = region[x][y];
+                                    GroundMaterial m = region[x + 1][y + 1];
                                     if (m == null) m = GroundMaterial.GRASS_DARK;
                                     stack.add(cell.tileIndex(m.solid(rng)));
+                                    GroundRegions.addMasks(stack, cell, region,
+                                            x, y, m, rng);
                                     // Tufts stay as measured. cleanChunk strips
                                     // them from Sand anyway (STATE §26), so a
                                     // yard square simply loses its tuft in game.
                                     GroundPalette.Ground gr = ground.roll(rng);
-                                    if (gr.overlay() != null) {
-                                        stack.add(cell.tileIndex(gr.overlay()));
-                                        overlays++;
+                                    if (gr.tuft() != null) {
+                                        stack.add(cell.tileIndex(gr.tuft()));
+                                        tufts++;
                                     }
                                 }
                             }
@@ -201,7 +204,7 @@ public final class GisCells {
                 totalRooms += rects.size();
                 totalSquares += squares;
                 totalEdgeFill += edgeFilled;
-                totalOverlays += overlays;
+                totalTufts += tufts;
 
                 String cellName = (ORIGIN_CELL_X + cx) + "_" + (ORIGIN_CELL_Y + cy);
                 writeChunkDensity(h, rects);
@@ -226,9 +229,9 @@ public final class GisCells {
         System.out.println("cells written: " + written
                 + "   squares: " + totalSquares + "   rooms: " + totalRooms
                 + "   edge-filled: " + totalEdgeFill);
-        System.out.printf("ground overlays: %d  (%.1f%% of ground squares;"
+        System.out.printf("ground tufts: %d  (%.1f%% of ground squares;"
                         + " vanilla measures 43.3%%)%n",
-                totalOverlays, totalSquares == 0 ? 0.0 : 100.0 * totalOverlays / totalSquares);
+                totalTufts, totalSquares == 0 ? 0.0 : 100.0 * totalTufts / totalSquares);
 
         writeModInfo(modsDir.resolve(modName), modName);
         writeSupportFiles(mapDir, modName, spawns);
