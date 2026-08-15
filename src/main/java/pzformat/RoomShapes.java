@@ -99,7 +99,8 @@ public final class RoomShapes {
         System.out.println("=".repeat(60));
         System.out.printf("  rects with min(w,h) == 1 : %d of %d  (%.2f%%)%n",
                 oneWide, rects, rects == 0 ? 0 : 100.0 * oneWide / rects);
-        System.out.printf("  diagonal runs (§17 check 1): %d%n", diagonalRuns);
+        System.out.printf("  staircase runs, 3+ rects stepping the same way"
+                + " (§17 check 1): %d%n", diagonalRuns);
         for (String s : diagExamples) System.out.println("      " + s);
         if (diagonalRuns == 0)
             System.out.println("      none — the constraint is HARD, a snap may refuse outright");
@@ -162,20 +163,45 @@ public final class RoomShapes {
             int w = maxX - minX, ht = maxY - minY;
             sizeHist.merge(bucket(w) + " x " + bucket(ht), 1L, Long::sum);
 
-            // §17 check 1: successive rects offset by ~1 on BOTH axes, with a
-            // near-1 dimension. That is what a diagonal wall would have to
-            // become if the format allowed one to be authored.
+            // §17 check 1. A diagonal wall, were it authorable, would have to
+            // become a RUN of thin rects each stepping the same way. Two rects
+            // offset diagonally is a corner — an L-shaped closet — and the
+            // first version of this test counted 1,334 of those as staircases.
+            // Require at least three rects and a consistent step direction.
+            int runLen = 0, lastSx = 0, lastSy = 0;
+            int runStart = 0;
             for (int i = 0; i + 1 < r.rects.size(); i++) {
                 int[] a = r.rects.get(i), b = r.rects.get(i + 1);
-                int dx = Math.abs(b[0] - a[0]), dy = Math.abs(b[1] - a[1]);
+                int dx = b[0] - a[0], dy = b[1] - a[1];
+                int sx = Integer.signum(dx), sy = Integer.signum(dy);
                 boolean thin = Math.min(a[2], a[3]) <= 1 && Math.min(b[2], b[3]) <= 1;
-                if (thin && dx >= 1 && dx <= 2 && dy >= 1 && dy <= 2) {
-                    diagonalRuns++;
-                    if (diagExamples.size() < 6)
-                        diagExamples.add(cell + " room '" + r.name + "' rects "
-                                + fmt(a) + " then " + fmt(b));
+                boolean step = thin && sx != 0 && sy != 0
+                        && Math.abs(dx) <= 2 && Math.abs(dy) <= 2;
+
+                if (step && (runLen == 0 || (sx == lastSx && sy == lastSy))) {
+                    if (runLen == 0) runStart = i;
+                    runLen++;
+                    lastSx = sx; lastSy = sy;
+                } else {
+                    if (runLen >= 2) recordRun(r, cell, runStart, runLen);
+                    runLen = step ? 1 : 0;
+                    if (step) { runStart = i; lastSx = sx; lastSy = sy; }
                 }
             }
+            if (runLen >= 2) recordRun(r, cell, runStart, runLen);
+        }
+    }
+
+    /** A run of {@code steps} consecutive same-direction diagonal steps. */
+    static void recordRun(LotHeader.Room r, String cell, int start, int steps) {
+        diagonalRuns++;
+        if (diagExamples.size() < 6) {
+            StringBuilder sb = new StringBuilder();
+            sb.append(cell).append(" room '").append(r.name).append("' ")
+              .append(steps + 1).append(" rects: ");
+            for (int k = start; k <= start + steps && k < r.rects.size(); k++)
+                sb.append(fmt(r.rects.get(k))).append(' ');
+            diagExamples.add(sb.toString().trim());
         }
     }
 

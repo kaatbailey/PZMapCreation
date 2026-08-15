@@ -843,8 +843,10 @@ Acting on any of these wastes real time.
 | The 16-tile mask block contract is uniform | **TRUE for natural ground only.** `blends_street_01` uses **8** masks per block, one variant set, not two. `Clay` uses 28 (§27). |
 | Indices 112–127 of `blends_natural_01` are an unidentified side-mask set | **They carry `FloorMaterial Clay`.** Why clay has 28 mask indices where every other natural material has 12 is still UNVERIFIED (§27). |
 | `Probe findprop` can measure a distribution | **FALSE.** Hard-capped at 3 hits per cell. It finds an example; it is never a census (§27). |
+| The jagged buildings were a room-rect problem | **FALSE, twice over.** `RoomShapes` on our own map: 8 rooms, 8 rects, fill ratio **1.000**, zero staircases — the room rects were already perfect rectangles. Nor was it a `deriveWalls` problem. The **raster** was: `fillPolygon` wrote the real 37–80° outline into `Cover.BUILDING`, and `deriveWalls` traced that while the room rect was computed separately as a bounding box (§31). |
+| Buildings are rasterised as polygons, which snaps them to the grid for free (`GisImport` javadoc) | **FALSE.** Rasterising a polygon snaps its *tiles* to the grid; it does not make its *edges* axis-parallel, and the format needs the latter. The javadoc asserted the opposite of what the code needed to do for eleven days (§31). |
 | §17: rotate the whole scene by the dominant footprint angle before rasterizing | **PREMISE FAILS on rural data, and is unnecessary anyway.** `FootprintAngles` over the current import: 7 footprints at 37, 61, 65, 71, 76, 80°, best ±3° window holding **33.3%** of area against §17's predicted "well over half". Scattered farmsteads each face their own driveway; there is no street grid because there is no street. And the target angle never needed discovering — see §30. |
-| `RoomShapes` found 1,334 diagonal runs in vanilla, so §17's check 1 is answered | **FALSE — those are false positives and check 1 is still OPEN.** The detector fired on any two thin rects offset by 1 on both axes, which is every L-shaped closet: `[186,185 3x1]` then `[185,186 4x1]` is axis-aligned with a jog, not a diagonal. A real staircase is a **run** of rects each stepping consistently in the same direction, not a pair (§30). |
+| `RoomShapes` found 1,334 diagonal runs in vanilla, so §17's check 1 is answered | **FALSE — those are false positives and check 1 is still OPEN.** The detector fired on any two thin rects offset by 1 on both axes, which is every L-shaped closet: `[186,185 3x1]` then `[185,186 4x1]` is axis-aligned with a jog, not a diagonal. A real staircase is a **run** of rects each stepping consistently in the same direction, not a pair (§30). **Now ANSWERED with the corrected detector: 107 runs, 0.12%, and all 107 are widening rooms rather than staircases. The constraint is HARD (§30).** |
 | Every block in a sheet has four solid variants | **FALSE for roads.** `blends_natural_01` does, all seven blocks. In `blends_street_01`, `Road_01` and `Road_02` have only **two** — B+6 and B+7 are spriteless. Solids must be listed per material, not computed (§29). |
 | A passing self-test means the mask rule is implemented correctly | **INSUFFICIENT.** `MaskRule`'s self-test passed 8/8 with N and W transposed, because it never exercises the neighbour lookup. Point `MaskAudit` at our own output instead — it reads the map we wrote and checks masks against our neighbours (§29). |
 | The generated road is too wide | **FALSE — it is 7 squares, exactly what `roadWidth("S1400") = 3` specifies.** Asserted three times from renders and refuted by one column count. The isometric projection makes a diagonal strip read far wider than it is (§29). |
@@ -2650,17 +2652,140 @@ Orientation is 0° by construction, so jaggedness cannot occur. Outline fidelity
 is deliberately discarded because vanilla has less of it than the source data
 does.
 
-### OPEN
+### §17 check 1 — ANSWERED. The axis constraint is HARD.
 
-1. **§17 check 1 is still unanswered.** Is the axis constraint hard or a strong
-   default with an override? A correct detector looks for a **run** of rects
-   each stepping consistently in one direction, not a pair of thin rects.
-   Decides whether the snap may refuse off-axis input outright.
-2. **Rooms per building, and which types co-occur.** A `Residential` recipe is
+Open since 2026-08-10. `RoomShapes` with a corrected detector — three or more
+rects stepping consistently in the same direction, not merely a pair — over all
+90,827 Muldraugh rooms: **107 runs, 0.12%.**
+
+And the 107 are not staircases. Every one is a room whose boundary *widens*
+step by step:
+
+```
+2_38  hall       [118,33 4x1] [116,34 6x1] [114,35 8x1]
+21_48 cave       [275,190 3x1] [274,191 8x1] [273,192 10x1] [271,193 12x1]
+21_48 cave       [304,153 19x1] [302,154 21x1] [300,155 21x1] [298,156 8x1]
+```
+
+Rows 4, 6, 8 wide: the left edge steps left while the rect grows. That is a
+splayed or funnel-shaped room, and the third example widens then collapses — an
+irregular cavern outline. **Every individual edge is still north-south or
+east-west. Not one off-axis wall exists in 90,827 rooms**, because the format
+cannot express one.
+
+What varies is how finely an author chooses to approximate a curve with steps,
+and they do so rarely and mostly in caves, where a ragged natural outline is
+the intent.
+
+**Consequence for E5: `FootprintSnap` may REFUSE off-axis input outright.**
+There is no vanilla practice it would be rejecting. A person drawing a diagonal
+wall in the editor should be told no.
+
+**And it sharpens what our buildings do wrong.** Ours stair-step because a
+polygon was rasterised. Vanilla's 107 step because an author chose to
+approximate a shape. Same visual primitive, opposite provenance — and the
+difference is exactly what E5 removes.
+
+Note `min(w,h) == 1` is **30.52%** of vanilla rects and is *not* a jaggedness
+signature on its own. Corridors, closets and wall-thin rooms are all one square
+wide by design.
+
+### OPEN
+1. **Rooms per building, and which types co-occur.** A `Residential` recipe is
    bedroom + bathroom + kitchen + livingroom; `Agriculture` is something else.
    This is the subdivision recipe and it has not been measured. `LotHeader`
    rooms carry no building id, so it needs a clustering pass — adjacent rooms
    sharing walls — or reading `objects.lua`.
-3. **Room size targets.** Our footprints are 76–341 m² at one square per metre;
+2. **Room size targets.** Our footprints are 76–341 m² at one square per metre;
    vanilla's building bounding boxes have not been measured, only its rooms'.
+
+
+---
+
+## 31. Buildings are rectangles now — E5, and two wrong diagnoses first
+
+2026-08-14. `FootprintSnap` added; `GisImport` rasterises snapped rectangles
+instead of polygons. Verified by `Probe roomgeom`, by render, and in game.
+
+### The defect
+
+`Probe roomgeom` on our own map excluded **all 3 rooms** in 200_200 as *"not
+axis-aligned"*, with north-wall concentration **0.19–0.43** where an aligned
+building gives ~1.0:
+
+```
+'room' [103,89 14x14] z=0 — north conc 0.43 (28 walls), west conc 0.29 (28 walls)
+```
+
+The room rect was a clean 14×14 bounding box. Its 28 north-wall squares were
+scattered along a diagonal outline. **The room and its walls described
+different shapes** — that is the black slab with a ragged fringe in game.
+
+Cause: `GisImport.fillPolygon` wrote the true polygon at 37–80° into
+`Cover.BUILDING`; `deriveWalls` traces `Cover.BUILDING`; `GisCells` computed
+the room rect independently as a bounding box.
+
+### Two wrong diagnoses, and what corrected them
+
+**First** I proposed snapping the room rects. `RoomShapes` pointed at our own
+map killed it immediately: 8 rooms, 8 rects, fill ratio 1.000, zero
+staircases. The room rects were already perfect rectangles and snapping them
+would have changed nothing.
+
+**Second** I proposed deriving walls from the room rect. That would have given
+straight walls over a floor that still followed the polygon — the interior
+would not have filled the room.
+
+**Both were caught by `Probe roomgeom`, which already existed**, already had
+"excluded as not axis-aligned" in it, and already cited §17. Nobody had pointed
+it at our own output. Same lesson as `MaskAudit` in §29: **an instrument built
+to measure vanilla works just as well on our map, and running it there is what
+catches implementation bugs rather than model bugs.**
+
+### The fix
+
+`FootprintSnap.snap` returns an axis-aligned rectangle preserving the
+footprint's **area** and **centroid**, with aspect ratio from the minimum-area
+enclosing rectangle — so a long barn stays long, it merely stops being rotated.
+It scales to the polygon's area rather than the enclosing rectangle's, which
+would otherwise inflate every building by roughly 1/cos of its angle.
+
+`GisImport` fills that rectangle. `deriveWalls` then traces a rectangle and
+emits four straight runs, so **floor, walls and room rect describe the same
+shape by construction** and jaggedness cannot occur.
+
+Self-test: an already-aligned 10×6 comes back byte-identical — the snap is a
+no-op on good input, which matters for the editor caller.
+
+### Results
+
+| | before | after |
+|---|---|---|
+| `roomgeom` 200_200 | 0 measured, 3 excluded | **3 measured, 0 excluded** |
+| north / south / west | 0.19–0.43 conc | **100.0%** |
+| 200_201 and 201_201, all four sides | — | **100.0%** |
+| building tiles | 1,530 | **1,391** |
+| derived walls | 278 N / 256 W | 244 N / 156 W |
+
+1,391 matches `FootprintAngles`' measured total footprint area of 1,391 m²
+exactly — area is preserved to the square.
+
+In game: a single unbroken wall run along the north face, a clean corner,
+another straight run down the east. No steps anywhere.
+
+### OPEN
+
+1. **East wall 63.0% in 200_200 only** (17 of 27), against 100% in both other
+   cells. The off-by-one alternative scores 0.0%, so it is not a convention
+   error — 10 walls are simply absent. Likely two buildings adjacent in x,
+   where the shared boundary correctly gets no wall. Local, not `deriveWalls`.
+2. **The yard apron may be too wide.** `YARD = 3` measured from a rectangle
+   covers more ground than from a thin polygon. **Measure it before changing
+   it** — the road looked far too wide in three separate renders and was
+   exactly the 7 squares its Census class specifies. Isometric projection
+   makes a strip read wider than it is.
+3. **Interior and roof are still absent.** `TilePalette` writes one interior
+   floor tile and nothing above, so a building is a black void with walls. Now
+   the most visible defect, since straight walls no longer distract from it.
+   A-track, and E13's subdivision work sits on top of it.
 

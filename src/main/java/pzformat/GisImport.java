@@ -10,12 +10,21 @@ import java.util.List;
 /**
  * Turns public-domain GIS data into Project Zomboid map geometry.
  *
- * Buildings are rasterised as POLYGONS, not bounding boxes: each tile is tested
- * for containment, then walls are derived from the boundary — a tile inside the
- * footprint whose north neighbour is outside gets a north wall. That handles
- * arbitrary building shapes, snaps them to the grid for free, and uses exactly
- * the edge convention verified against vanilla rooms (south wall belongs to the
- * next square down, east wall to the next square right).
+ * Buildings are rasterised as SNAPPED RECTANGLES. Each footprint goes through
+ * {@link FootprintSnap}, which returns an axis-aligned rectangle of matching
+ * area and centroid; that rectangle is filled. Walls are then derived from the
+ * boundary — a tile inside the footprint whose north neighbour is outside gets
+ * a north wall — using the edge convention verified against vanilla rooms
+ * (south wall belongs to the next square down, east wall to the next square
+ * right).
+ *
+ * It rasterised polygons until 2026-08-14. That produced buildings whose room
+ * rect was a bounding box while their walls traced the real outline at 37-80
+ * degrees: `Probe roomgeom` excluded every room as "not axis-aligned" with
+ * north-wall concentration 0.19-0.43 against ~1.0 for an aligned building.
+ * A room is `x, y, w, h` with no rotation field (STATE §10), so an off-axis
+ * wall is not merely ugly, it is unrepresentable — and jaggedness is its
+ * symptom rather than a defect in its own right. STATE §30.
  *
  * Scale: one PZ tile is treated as one metre, which matches vanilla building
  * proportions closely.
@@ -131,10 +140,21 @@ public final class GisImport {
         for (GeoJson.Feature f : buildings.features) {
             String occ = f.prop("OCC_CLS");
             if (occ == null || occ.isEmpty()) occ = "Unknown";
-            boolean any = false;
-            for (List<double[]> ring : f.rings)
-                if (g.fillPolygon(g.project(ring, minLon, maxLat, mPerLon, mPerLat), occ)) any = true;
-            if (any) {
+
+            // A feature may carry several rings — a multipolygon, or an outer
+            // ring plus holes. Take the largest; a building is one rectangle.
+            List<int[]> largest = null;
+            double largestArea = 0;
+            for (List<double[]> ring : f.rings) {
+                List<int[]> pts = g.project(ring, minLon, maxLat, mPerLon, mPerLat);
+                double a = Math.abs(FootprintSnap.shoelace(FootprintSnap.dedupe(pts)));
+                if (a > largestArea) { largestArea = a; largest = pts; }
+            }
+            if (largest == null) continue;
+
+            FootprintSnap.Rect r = FootprintSnap.snap(largest);
+            if (r == null) continue;
+            if (g.fillRect(r, occ)) {
                 g.buildingsPlaced++;
                 g.byOccupancy.merge(occ, 1, Integer::sum);
             }
@@ -216,7 +236,33 @@ public final class GisImport {
 
     boolean inBounds(int x, int y) { return x >= 0 && y >= 0 && x < width && y < height; }
 
-    /** Scanline fill with even-odd containment. Returns true if anything landed. */
+    /**
+     * Fill an axis-aligned rectangle. Returns true if anything landed.
+     *
+     * This is what buildings use. Because the rectangle's edges are axis-
+     * parallel, every tile boundary lands exactly on the grid and
+     * {@link #deriveWalls} produces four straight runs — the room rect and its
+     * walls describe the same shape, which is the whole point (STATE §30).
+     */
+    boolean fillRect(FootprintSnap.Rect r, String occ) {
+        boolean any = false;
+        for (int x = Math.max(r.x(), 0); x < Math.min(r.x() + r.w(), width); x++)
+            for (int y = Math.max(r.y(), 0); y < Math.min(r.y() + r.h(), height); y++) {
+                if (cover[x][y] != Cover.BUILDING) buildingTiles++;
+                cover[x][y] = Cover.BUILDING;
+                occupancy[x][y] = occ;
+                any = true;
+            }
+        return any;
+    }
+
+    /**
+     * Scanline fill with even-odd containment. Returns true if anything landed.
+     *
+     * RETAINED, UNUSED. Buildings went through this until 2026-08-14 and now
+     * use {@link #fillRect}. Kept because it is correct and a future caller
+     * that genuinely wants a polygon — a lake, a field boundary — will want it.
+     */
     boolean fillPolygon(List<int[]> ring, String occ) {
         if (ring.size() < 3) return false;
         int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
