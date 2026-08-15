@@ -166,6 +166,17 @@ source, never by more testing of the same kind.**
   happened to agree with the hypothesis under test. A 3-square sample cannot
   produce a run longer than 1. Check what a tool *can* return before believing
   what it did return (§27).
+- **A test one layer above the bug cannot see it.** `MaskRule`'s self-test
+  checked direction-set to tile-offset and passed 8/8 while N and W were
+  transposed in the direction-to-neighbour table one layer below. `MaskAudit`
+  could not see it either, because it reads vanilla rather than our output.
+  The render caught it in one look. When a test passes, ask which layer it
+  actually exercises (§29).
+- **TIS's tile names are data, not our identifiers.** A blind textual rename of
+  "overlay" to "tuft" ate the string literal `blends_grassoverlays_01_`,
+  silently zeroing the tuft layer. The guard searched for the OLD spelling, so
+  it could see under-renaming and was blind to over-renaming. Rename our
+  identifiers; never their strings (§29).
 - **Change one thing per test.**
 - **The renderer is a hypothesis too.** It has been wrong twice. When the
   picture looks wrong, the picture may be what is wrong.
@@ -832,6 +843,9 @@ Acting on any of these wastes real time.
 | The 16-tile mask block contract is uniform | **TRUE for natural ground only.** `blends_street_01` uses **8** masks per block, one variant set, not two. `Clay` uses 28 (§27). |
 | Indices 112–127 of `blends_natural_01` are an unidentified side-mask set | **They carry `FloorMaterial Clay`.** Why clay has 28 mask indices where every other natural material has 12 is still UNVERIFIED (§27). |
 | `Probe findprop` can measure a distribution | **FALSE.** Hard-capped at 3 hits per cell. It finds an example; it is never a census (§27). |
+| Every block in a sheet has four solid variants | **FALSE for roads.** `blends_natural_01` does, all seven blocks. In `blends_street_01`, `Road_01` and `Road_02` have only **two** — B+6 and B+7 are spriteless. Solids must be listed per material, not computed (§29). |
+| A passing self-test means the mask rule is implemented correctly | **INSUFFICIENT.** `MaskRule`'s self-test passed 8/8 with N and W transposed, because it never exercises the neighbour lookup. Point `MaskAudit` at our own output instead — it reads the map we wrote and checks masks against our neighbours (§29). |
+| The generated road is too wide | **FALSE — it is 7 squares, exactly what `roadWidth("S1400") = 3` specifies.** Asserted three times from renders and refuted by one column count. The isometric projection makes a diagonal strip read far wider than it is (§29). |
 | The GIS import carries land use (§22, §27) | **HALF TRUE, and the half that is false blocked E8.** `GisImport.Cover` is `{NONE, ROAD, BUILDING}`. Building footprints, road centrelines and a per-building occupancy class — no landcover. There is no evidence for multiple grass regions in open country, so E8 writes one (§28). |
 | Dither is a coherent noise field | **FALSE.** Matched-distance lift is 0.95–1.14 on the boundary contour across every material pair and filter window, on 8,000+ pairs. Adjacent squares are independent. The 5–10× lift further out is a different population — genuine small regions the majority filter smoothed away (§28). |
 | Vanilla's measured P(minority\|d) can be used directly as a flip probability | **FALSE.** They are different quantities: the measurement is the outcome after both sides of an edge have dithered. Using 0.27 as an input rate over-produced isolated squares 4×. The shipped profile is FITTED, not derived (§28). |
@@ -2400,4 +2414,132 @@ The difference between P=0.27 and P=0.06 is **barely visible in the render**
 while the census channels moved by a factor of three. Tuning ground by eye would
 not have found this. `GroundCensus` run against our own output is the check that
 works; use it.
+
+
+---
+
+## 29. The mask pass — E9, and §26's four-layer model is complete
+
+E9, 2026-08-14. **Built, verified against vanilla, verified against our own
+output, and verified in game.** Ground material boundaries are now soft.
+Render: `docs/e9_fixed.png`.
+
+New code: `MaskRule` (pure), `MaskAudit` (read-only). Changed: `GroundMaterial`
+gains sheets, per-material solids, variant-set counts and the seven road types;
+`GroundRegions` gains `addMasks` and a bordered `build`; `GisCells` calls the
+mask pass at all three ground sites; `GroundPalette`'s "overlay" renamed to
+"tuft".
+
+### The rule, confirmed over 22 million masks
+
+`MaskAudit` walks every square of every named cell, computes the neighbour
+materials, and checks what vanilla actually wrote. Over the whole Muldraugh map:
+
+| geometry | encoding | share | n |
+|---|---|---|---|
+| \|S\|=1 | one side tile | 99.9% | 7.9M |
+| \|S\|=2 adjacent | **one corner tile** | 99.4–99.7% | 4.45M |
+| \|S\|=2 opposite | two side tiles | 99.6% | 3.1M |
+| \|S\|=3 | two corners sharing the middle | 99.2–99.4% | **1,288,832** |
+| \|S\|=4 | four corner tiles | 99.1% | 210,412 |
+
+**§26's `|S|=3` and `|S|=4` clauses each rested on ONE observation.** They are
+now the best-attested things in the project. The owner chose to measure before
+building rather than implement on n=1 and fix later; it cost one session and
+settled both.
+
+**Unexplained masks: 0.809%** — a mask whose material is on no side. Not spread
+evenly: three cells gave 0.033%, and two pairs dominate the total,
+`Road_01 on Road_07` (71,936) and `Grass_Light on Dirt_Grass` (61,303). So the
+residue is **clustered in specific cells**, which is the answer §27's open check
+was asking for: they are localised authoring, not a broken rule.
+
+**UNVERIFIED — a possible missing clause.** One probe found a diagonal-only
+neighbour taking a **side** tile: 0_34 (117,210) is `Grass_Dark` carrying a
+`Grass_Light` E-side mask, with `Grass_Light` at the NE diagonal (118,209) and
+on no orthogonal side. **Not implemented** — n=1 is exactly what this session
+just spent a measurement refusing to build on, and 0.8% is inside tolerance.
+**Check:** extend `MaskAudit` to record diagonal geometry, ~20 lines.
+
+### Roads
+
+Seven road types added with their **real** shapes, which are not uniform:
+
+| block | material | solids | masks |
+|---|---|---|---|
+| 0 | `Road_01` | 0, 5 — **two only** | 8 |
+| 16 | `Road_02` | 16, 21 — **two only** | 8 |
+| 32/48/64/80/96 | `Road_03`..`Road_07` | four | 8 |
+
+`blends_street_01` has **one** mask variant set; `blends_natural_01` has two.
+Emitting B+12..15 for a road would write tiles that do not exist.
+
+Roads join the material array so grass can mask onto them — §27 measured
+`Grass_Dark > Road_04` at 284,583 — with ranks 0–6 natural and 10–16 road, so
+every natural material outranks every road by construction. **The dither
+explicitly skips road boundaries**: interleaving would put grass squares in the
+carriageway and road squares in the field. A road edge is hard, softened by
+masks only.
+
+The mask belongs on the LOWER-priority square, so grass masks are written on the
+**road** square. The road branch in `GisCells` had to call `addMasks` too; until
+it did, the census reported no road pairs at all and the array change looked
+inert.
+
+### The N/W transposition
+
+`MaskRule.Dir` was declared `N(0, -1, 0), W(1, 0, -1)` against a constructor of
+`(ord, dx, dy)`. **N carried dx=−1 — it pointed west; W pointed north.** On a
+diagonal boundary that put roughly half the mask art on the wrong edge of its
+square and rendered as a regular sawtooth along the road.
+
+Caught by: 200_200 (20,166) has `Grass_Medium` to its **north** at (20,165) and
+carried `blends_natural_01_45`, a **west** side mask, its own
+`FloorAttachmentW` confirming it. After the fix, `_40` with `FloorAttachmentN`.
+
+The self-test now asserts the direction table directly — dx, dy, ord and
+opposite() — so this cannot recur silently. 12/12 cases pass.
+
+### Verified against our own output
+
+`MaskAudit` pointed at `$GISMAP` rather than Muldraugh:
+
+| geometry | encoding | share |
+|---|---|---|
+| \|S\|=3, all four orientations | the single correct encoding | **100.0%** |
+| \|S\|=4 | `[1, 2, 3, 4]` | **100.0%** |
+| unexplained masks | — | **0.000%** |
+
+Vanilla runs 99.1–99.7% with an 0.809% unexplained floor because it carries
+hand-edits; we author from a strict table, so our map is **more internally
+consistent than Muldraugh**. `GroundCensus` agrees: Q1 holds exactly the
+boundaries the region layer creates, all in the correct direction, and Q2 is
+empty.
+
+**This is the test that would have caught the transposition in one run**, and it
+did not exist until after the render found it. `MaskAudit` works on any map
+directory; point it at our output after any change to the mask path.
+
+### Verified in game
+
+A fresh world at the generated map shows grass bleeding onto the sand yard in
+soft irregular fringes rather than stepping square by square — **the masks
+render**. That closes §26's out-of-scope worry that `attachmentsDoneFull`
+defaults to true and `applyAttachments` might never run on authored chunks. It
+evidently does not block mask art.
+
+The road reads as plain unmarked asphalt at 7 squares, correct for its Census
+class `S1400` ("Co Hwy 26", half-width 3).
+
+### OPEN
+
+1. **Yards are much larger than `YARD = 3` suggests.** A large irregular
+   footprint puts many squares within 3 of *some* part of it, and the union
+   reads as an 8–10 square apron. Region shape, not mask behaviour. `YARD` and
+   `VERGE` remain guesses isolated as constants (§28).
+2. **The diagonal mask clause**, above.
+3. `Road_03` vs `Road_05` still separate at only 24:1 (§27). Nothing depends on
+   it yet.
+4. The buildings are black slabs with no roof or interior detail — `TilePalette`
+   writes one interior floor tile and nothing above. A-track, untouched here.
 

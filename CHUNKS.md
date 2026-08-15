@@ -89,8 +89,10 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 | `[ ]` | **E6** Extract `BiomeMapWriter` distance banding | — | Small. Three consumers want a region signal |
 | `[x]` | **E7** Ground precedence and dither generality | E3 | **CLOSED 2026-08-13. Priority table CONFIRMED** over 4,065 cells (STATE §27, `docs/E7_GROUND_PRECEDENCE.md`) |
 | `[x]` | **E8** Region layer and the dither law | E7 | **CLOSED 2026-08-14. The scattered-diamond defect is FIXED** (STATE §28, `docs/e8_final.png`) |
-| `[ ]` | **E9** Mask pass | E7, E8 | **Shared with A3** — neighbour-rule engine, ground is its first consumer |
+| `[x]` | **E9** Mask pass | E7, E8 | **Shared with A3** — neighbour-rule engine, ground is its first consumer |
 | `[ ]` | **E10** Restore dirt, gated to yards and tracks | E8 | Reverses test 27's symptom fix |
+| `[ ]` | **E11** Region shape | E9 | Yards read as an 8-10 square apron; vanilla's minority squares form chains, ours are isolates |
+| `[ ]` | **E12** Diagonal mask clause | E9 | Small. Extend `MaskAudit` to record diagonal geometry first |
 
 **E9 is the second charter §2 test, and E5 the first:** a GIS feature the editor needs
 regardless of who authors the tiles. E4 exists to serve it.
@@ -121,7 +123,13 @@ line of work is fixed. E9 adds the mask layer, which softens the remaining hard
 edges between materials — the last piece of §26's four-layer model. The order is
 now:
 
-**E9 → A2-gate → B1 → B2 → C1**, with E10, E11 and A3-pre1/pre2 available as
+**AMENDED 2026-08-14.** E9 is closed. §26's four-layer model — region,
+texture, dither, mask — is complete, and the ground work that began with E3 is
+finished and verified in game. The E-track now has only refinements left, so
+the next substantial work is the tree-ownership gate that has blocked A2 since
+2026-08-11. The order is now:
+
+**A2-gate → B1 → B2 → C1**, with E10, E11, E12 and A3-pre1/pre2 available as
 small fillers at any point.
 
 **E3 first (RESOLVED 2026-08-14 — E3, E7 and E8 are closed and the ground defect is fixed; kept as the record of why this line of work came first.)** Ground appearance was the most immersion-breaking defect on the
@@ -800,75 +808,40 @@ store chosen. Shapes only:
 
 ---
 
-## E9 — Mask pass
+## E9 — Mask pass  ✅ DONE 2026-08-14
 
-**This chunk builds.** It adds the last layer of §26's model. After it, ground
-material boundaries are soft rather than hard-edged, and the four-layer model
-— region, texture, dither, mask — is complete.
-
-**Read first:** STATE §26 (the rule), §27 (the priority table and three
-implementation traps), §28 (what E8 built). The priority table is CONFIRMED
-over 4,065 cells — **do not re-measure it.**
-
-## What to build
-
-A mask pass over the material grid `GroundRegions.build` already produces. For
-each square, for each distinct neighbouring material that **outranks** it
-(`GroundMaterial.outranks`), emit that material's mask tiles per §26's rule:
-
-| \|S\| | encoding |
-|---|---|
-| 1 | one side tile |
-| 2, adjacent | **one corner tile** — not two side tiles |
-| 2, opposite | two side tiles |
-| 3 | two corner tiles sharing the middle direction |
-| 4 | four corner tiles |
-
-where S is the set of orthogonal directions holding that material. Offsets from
-the material's block base B: corners N+W=B+1, E+S=B+2, S+W=B+3, E+N=B+4; sides
-N=B+8, W=B+9, E=B+10, S=B+11, with a second variant set at B+12..B+15 for
-natural ground only.
-
-**Write it as a general neighbour-rule engine, not a ground-specific pass.** It
-is the same shape as A3 auto wall-joining, and A3's row already records the
-dependency. `floors_burnt_01` is a third consumer.
-
-## Four traps, all measured
-
-1. **`blends_street_01` blocks hold 8 masks, not 12.** One variant set. Code
-   assuming the natural-ground shape emits `blends_street_01_12`..`_15`, which
-   are not road masks.
-2. **Key on `FloorMaterial`, never on tileset.** Masks cross sheets freely —
-   §27 saw `blends_street_01` solids carrying `blends_natural_01` masks.
-3. **Run once per distinct outranking neighbour and concatenate** — §27
-   confirmed multi-material squares are common.
-4. **Masks go AFTER the solid, before the tuft.** §26: the solid must be first
-   in the stack or `getFloor()` and `cleanChunk` read the wrong tile.
-
-Also: emit only 97–100 and 104–111 for Clay; its 112–127 range is unexplained.
-And rename `GroundPalette`'s "overlay" to **tuft** here — three meanings now
-collide (mask, tuft, decal) and §27 flags it as the likeliest misimplementation.
-
-## Definition of done
-
-- Masks written, `assertNoEmptySquares` still passing.
-- **A rendered before/after** against `docs/e8_final.png` and
-  `docs/vanilla_blend_tight.png`, same code path.
-- `GroundCensus` over our own cells shows a **non-empty Q1** whose pairs match
-  the priority table, and **zero Q2 contradictions** — we author from a strict
-  table even though vanilla does not.
-
-## Falsification
-
-Predict the Q1 pair counts before running. Name what the render would look like
-if the mask pass ran without error but emitted the wrong offsets — hint: wrong
-corner offsets give visible notches at region corners, not a uniform change.
-
-## Do not
-
-- Do not re-measure the priority table or the block contract.
-- Do not change `GroundRegions`' dither constants. They are fitted; refitting
-  belongs with E11, after region shape is settled.
+> **§26's four-layer model is complete** — region, texture, dither, mask.
+> Ground material boundaries are soft, including grass onto road. Verified
+> against vanilla, against our own output, and in game. `docs/e9_fixed.png`.
+>
+> **The rule holds over 22 million vanilla masks** (`MaskAudit`): |S|=1 one
+> side 99.9%, |S|=2 adjacent one corner 99.4–99.7%, |S|=2 opposite two sides
+> 99.6%, |S|=3 two corners 99.2–99.4%, |S|=4 four corners 99.1%. **§26's |S|=3
+> and |S|=4 clauses each rested on ONE observation**; |S|=3 is now n=1,288,832.
+> Measuring before building was the owner's call and it settled both.
+>
+> **Against our own output: 100.0% single encoding per geometry, 0.000%
+> unexplained** against vanilla's 0.809%. We author from a strict table where
+> vanilla carries hand-edits, so our map is more internally consistent than
+> Muldraugh.
+>
+> **Roads are not uniform.** `Road_01` and `Road_02` have only TWO solid
+> variants; street blocks carry 8 masks, not 12. Solids are now listed per
+> material rather than computed. Roads join the material array so grass can
+> mask onto them, but the dither skips road boundaries.
+>
+> **A transposition got through two passing tests.** `MaskRule.Dir` had N
+> carrying dx=−1 — pointing west — which put half the mask art on the wrong
+> edge and rendered as a sawtooth. The self-test checks set-to-offset, one
+> layer above; `MaskAudit` reads vanilla, not our output. The render caught it.
+> Both gaps are now closed: the self-test asserts the direction table, and
+> `MaskAudit` runs against our own map.
+>
+> Also renamed `GroundPalette`'s "overlay" to **tuft** — three things answered
+> to that name. A blind rename ate `blends_grassoverlays_01_` and zeroed the
+> layer; TIS's names are data, not our identifiers.
+>
+> STATE §29, three Corrections rows, two method notes.
 
 ---
 
@@ -890,7 +863,7 @@ corner offsets give visible notches at region corners, not a uniform change.
 
 ---
 
-## E2 / E4 / E5 / E6 / E9 / E10 — stubs
+## E2 / E4 / E5 / E6 / E10 / E11 / E12 — stubs
 
 - **E2 Calibrate density.** 2 near buildings is at the low end of vanilla's
   0–10 range, and seven buildings is a hamlet, not a town. The import already
