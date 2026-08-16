@@ -843,6 +843,7 @@ Acting on any of these wastes real time.
 | The 16-tile mask block contract is uniform | **TRUE for natural ground only.** `blends_street_01` uses **8** masks per block, one variant set, not two. `Clay` uses 28 (§27). |
 | Indices 112–127 of `blends_natural_01` are an unidentified side-mask set | **They carry `FloorMaterial Clay`.** Why clay has 28 mask indices where every other natural material has 12 is still UNVERIFIED (§27). |
 | `Probe findprop` can measure a distribution | **FALSE.** Hard-capped at 3 hits per cell. It finds an example; it is never a census (§27). |
+| `RoomLayout` found only 10.5% of vanilla buildings recursively splittable, so the layout is not a BSP | **FALSE — the instrument was wrong.** It split on **bounding boxes**, and a room's box is not its shape: an L-shaped livingroom's box swallows whatever sits in its notch, so boxes overlap where the rooms do not. Splitting on **rects** gives **85.0%**, and 2-room buildings go from 66.1% to **100.0%** — which is the check that should have been run first, since two rooms failing to separate is near-impossible (§34). |
 | Room count does not decide whether a building has a hallway | **FALSE.** It decides it almost by itself: 6.1% of 2–3 room buildings have one, 14.4% at 4–5, **57.3% at 6–7**, 84.9% at 8–10, 90% above. A clean sigmoid with the transition at 6–7 rooms. Asserted twice in-session that access rather than size was the factor; access is the *reason*, room count is what predicts it (§33). |
 | The GIS footprint should decide what each building becomes | **SUPERSEDED by an owner decision, 2026-08-14.** GIS is authoritative for what EXISTS; gameplay is additive. Every real footprint stays a real building of its real class, and where the game needs something the data lacks it is **added** and attached to a host — never reclassified. Reclassification would destroy the provenance distinction permanently and invisibly (§33). |
 | One PZ tile is one metre (assumed since the first import) | **CONFIRMED to 0.4%**, and only now. Total building tiles 1,409 against the dataset's own `SQMETERS` sum of 1,403 across seven footprints. The whole coordinate path rested on this and nothing had ever checked it (§32). |
@@ -3058,4 +3059,112 @@ evenly and labelling afterwards.
    `MaskRule`.
 3. Detached garages are **too small to appear in USA Structures at all** —
    bucket A is empty in our import. Every garage on our map will be synthesised.
+
+
+---
+
+## 34. Room layout — a BSP, plus a circulation pass
+
+E14, 2026-08-14. `RoomLayout`, read-only. This is the last measurement E13
+needed.
+
+### The layout IS recursively splittable — 85.0%
+
+Tested by trying to split: take the building's extent, look for a full-span cut
+that no **rect** straddles, recurse on both sides, and check that every leaf
+holds rects of one room only. That is the definition of a binary space
+partition applied directly.
+
+| rooms | splittable |
+|---|---|
+| 2 | **100.0%** |
+| 3 | 98.3% |
+| 4 | 93.3% |
+| 5 | 86.0% |
+| 6 | 76.3% |
+| 7–12 | 77–85% |
+| 13+ | 40–70%, noisy |
+
+**Overall 85.0% of 8,580 multi-room buildings.** Falling with complexity,
+never collapsing.
+
+### The 15% that will not split is the HALLS
+
+The failures are not pinwheels. They are one shape, over and over:
+
+```
+4_37  hall[9,135 10x1][11,136 8x1][17,137 2x1]
+3_37  hall[25,222 4x1][25,223 3x2][23,225 5x1][20,226 7x1]
+2_38  hall[173,128 7x1][175,129 2x2]
+```
+
+**A hall snakes.** Three or four thin rects stepping around corners, threading
+between rooms. That cannot come out of recursive splitting, because the hall is
+not a leaf of a partition — **it is the negative space left over after the
+rooms are placed.**
+
+### So the algorithm is: split, then carve
+
+1. **Recursively split** the building rectangle to place the rooms. Allocate
+   area by type using the ratios below, not evenly.
+2. **Carve a hall** through the leftover, when room count says one is needed.
+
+This matches §33 from the other direction. Halls appear by room count — 6.1% at
+2–3 rooms, 57.3% at 6–7, 84.9% at 8–10 — and the BSP rate dips to 76–80%
+exactly across that same range. **The two measurements are the same fact seen
+twice**: where a hall is needed, a pure partition stops being sufficient.
+
+### Room area by type — stable and strongly differentiated
+
+`× mean` is the room's area over its **own building's** mean room area, so a
+mansion and a cottage are comparable.
+
+| type | × mean | median sq | p90 sq | n |
+|---|---|---|---|---|
+| `closet` | **0.11** | 2 | 4 | 3,689 |
+| `janitor` | 0.16 | 9 | 30 | 532 |
+| `laundry` | 0.24 | 6 | 15 | 1,030 |
+| `bathroom` | **0.27** | 6 | 12 | 11,406 |
+| `office` | 0.60 | 27 | 90 | 2,741 |
+| `kidsbedroom` | 0.81 | 15 | 24 | 1,153 |
+| `bedroom` | **0.83** | 16 | 25 | 7,635 |
+| `kitchen` | **1.03** | 24 | 30 | 6,649 |
+| `diningroom` | 1.17 | 20 | 40 | 511 |
+| `garage` | 1.26 | 30 | 48 | 527 |
+| `lobby` | 1.50 | 28 | 99 | 332 |
+| `livingroom` | **1.80** | 42 | 70 | 7,873 |
+| `hall` | 1.83 | 40 | 126 | 2,764 |
+
+A livingroom is **6.7× a bathroom**. Splitting evenly and labelling afterwards
+would produce a house with a 42-square bathroom, which is the difference
+between a plausible building and a grid of equal boxes.
+
+The absolute medians are what E13 allocates from: bathroom 6, bedroom 16,
+kitchen 24, livingroom 42, closet 2.
+
+### The instrument was wrong first, and the check that caught it
+
+The first run reported **10.5%** and I read it as "vanilla is not a BSP". It
+split on **bounding boxes**. A room's box is not its shape — §30 measured 35.7%
+of rooms as multi-rect, and an L-shaped livingroom's box swallows whatever
+occupies the notch, so boxes overlap where the rooms tile perfectly.
+
+**The tell was in the output and I nearly missed it: 2-room buildings scored
+66.1%.** Two rooms failing to separate with a single cut is close to
+impossible. A number that cannot be right is a statement about the instrument,
+not the map — and after the fix it reads 100.0%.
+
+Third time this pattern has cost a cycle: the confounded run-length test (§28),
+the first diagonal-run detector (§30), and now this. All three produced clean,
+plausible numbers that happened to agree with the hypothesis being tested.
+
+### OPEN
+
+1. **The carve step is unspecified.** We know a hall is thin (median 40 squares
+   at 1.83× mean, so long and narrow) and that it snakes. We do not know how
+   vanilla routes it — along one wall, down the middle, or wherever the rooms
+   leave a gap.
+2. **Multi-rect rooms are 35.7%** and a pure BSP produces only rectangles. Some
+   of that is rooms wrapping a hall; the rest is unexplained. E13 can ship
+   rectangles-only and look right; this is what would make it look *authored*.
 
