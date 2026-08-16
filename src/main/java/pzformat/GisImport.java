@@ -45,6 +45,22 @@ public final class GisImport {
     public int buildingsPlaced, roadsPlaced, buildingTiles, roadTiles;
     public final Map<String, Integer> byOccupancy = new TreeMap<>();
 
+    /**
+     * One placed building, with the classification an interior recipe needs.
+     *
+     * @param rect        the snapped axis-aligned footprint, in tiles
+     * @param occ         OCC_CLS — Residential, Agriculture, Commercial, ...
+     * @param primOcc     PRIM_OCC, the finer class, or null
+     * @param outbuilding OUTBLDG set — a barn or shed, not a dwelling
+     * @param sqMeters    the dataset's own area, or 0 if absent. Compare
+     *                    against {@code rect.area()} to check the projection.
+     */
+    public record Building(FootprintSnap.Rect rect, String occ, String primOcc,
+                           boolean outbuilding, double sqMeters) { }
+
+    /** Every building placed, in import order. */
+    public final List<Building> buildings = new ArrayList<>();
+
     public static void run(Path buildingsFile, Path roadsFile, Path outDir,
                            int maxTiles) throws Exception {
         run(buildingsFile, roadsFile, null, outDir, maxTiles);
@@ -143,11 +159,11 @@ public final class GisImport {
 
             // A feature may carry several rings — a multipolygon, or an outer
             // ring plus holes. Take the largest; a building is one rectangle.
-            List<int[]> largest = null;
+            double[][] largest = null;
             double largestArea = 0;
             for (List<double[]> ring : f.rings) {
-                List<int[]> pts = g.project(ring, minLon, maxLat, mPerLon, mPerLat);
-                double a = Math.abs(FootprintSnap.shoelace(FootprintSnap.dedupe(pts)));
+                double[][] pts = g.projectExact(ring, minLon, maxLat, mPerLon, mPerLat);
+                double a = FootprintSnap.area(pts);
                 if (a > largestArea) { largestArea = a; largest = pts; }
             }
             if (largest == null) continue;
@@ -157,6 +173,19 @@ public final class GisImport {
             if (g.fillRect(r, occ)) {
                 g.buildingsPlaced++;
                 g.byOccupancy.merge(occ, 1, Integer::sum);
+
+                String prim = f.prop("PRIM_OCC");
+                String outb = f.prop("OUTBLDG");
+                double sqm = 0;
+                try {
+                    String s = f.prop("SQMETERS");
+                    if (s != null && !s.isEmpty()) sqm = Double.parseDouble(s);
+                } catch (NumberFormatException ignored) { }
+
+                g.buildings.add(new Building(r, occ,
+                        prim == null || prim.isEmpty() ? null : prim,
+                        outb != null && !outb.isEmpty() && !"null".equals(outb),
+                        sqm));
             }
         }
 
@@ -188,6 +217,31 @@ public final class GisImport {
         System.out.println("derived walls: " + nw + " north, " + ww + " west");
         System.out.println("\nby occupancy class:");
         g.byOccupancy.forEach((k, v) -> System.out.printf("   %-24s %d%n", k, v));
+
+        int outbuildings = 0, withArea = 0;
+        double worst = 0;
+        String worstWhy = "";
+        for (Building b : g.buildings) {
+            if (b.outbuilding()) outbuildings++;
+            if (b.sqMeters() <= 0) continue;
+            withArea++;
+            double err = Math.abs(b.rect().area() - b.sqMeters()) / b.sqMeters();
+            if (err > worst) {
+                worst = err;
+                worstWhy = b.rect() + " = " + b.rect().area()
+                        + " tiles vs SQMETERS " + String.format("%.1f", b.sqMeters());
+            }
+        }
+        if (outbuildings > 0)
+            System.out.println("   (" + outbuildings + " flagged OUTBLDG)");
+        if (withArea > 0) {
+            System.out.printf("%narea check against the dataset's own SQMETERS:"
+                    + " worst %.1f%% over %d buildings%n", 100 * worst, withArea);
+            System.out.println("   " + worstWhy);
+            if (worst > 0.15)
+                System.out.println("   WARNING: over 15%. The projection or the snap is"
+                        + " drifting — one PZ tile is one metre, so these should agree.");
+        }
 
         return g;
     }
@@ -221,6 +275,25 @@ public final class GisImport {
             case "S1710", "S1720", "S1730" -> 1;   // walkway, stairway, alley
             default -> 3;
         };
+    }
+
+    /**
+     * Project without rounding. Buildings use this: quantising vertices before
+     * {@link FootprintSnap} measures them costs 2-7% of every footprint's area,
+     * always downward, and the loss cannot be recovered afterwards.
+     *
+     * Roads keep the integer {@link #project} — `thickLine` walks tile centres
+     * and wants them.
+     */
+    double[][] projectExact(List<double[]> ring, double minLon, double maxLat,
+                            double mPerLon, double mPerLat) {
+        double[][] out = new double[ring.size()][2];
+        for (int i = 0; i < ring.size(); i++) {
+            double[] p = ring.get(i);
+            out[i][0] = (p[0] - minLon) * mPerLon;
+            out[i][1] = (maxLat - p[1]) * mPerLat;          // north is -y
+        }
+        return out;
     }
 
     List<int[]> project(List<double[]> ring, double minLon, double maxLat,

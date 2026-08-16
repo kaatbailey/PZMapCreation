@@ -72,7 +72,19 @@ public final class FootprintSnap {
      * @return the rectangle, or null if the ring is degenerate
      */
     public static Rect snap(List<int[]> ring) {
-        double[][] p = dedupe(ring);
+        return snap(dedupe(ring));
+    }
+
+    /**
+     * Snap from EXACT projected coordinates.
+     *
+     * Prefer this. Integer input has already lost 2-7% of the footprint's area
+     * to vertex quantisation before this method can measure it, and the loss is
+     * always downward — every one of the seven test footprints measured below
+     * its recorded SQMETERS.
+     */
+    public static Rect snap(double[][] pts) {
+        double[][] p = dedupeExact(pts);
         if (p.length < 3) return null;
 
         double area = Math.abs(shoelace(p));
@@ -89,11 +101,35 @@ public final class FootprintSnap {
         // building's min-area rect is close to its true area, but the two are
         // not identical and the error compounds across a town.
         double scale = Math.sqrt(area / (w * ht));
-        int rw = Math.max(1, (int) Math.round(w * scale));
-        int rh = Math.max(1, (int) Math.round(ht * scale));
+        double ew = w * scale, eh = ht * scale;
+
+        // Round the LONGER side, then derive the shorter from the area.
+        // Rounding both independently discards the one quantity we care about,
+        // and on a small building one square is a large fraction of a side.
+        int rw, rh;
+        if (ew >= eh) {
+            rw = Math.max(1, (int) Math.round(ew));
+            rh = Math.max(1, (int) Math.round(area / rw));
+        } else {
+            rh = Math.max(1, (int) Math.round(eh));
+            rw = Math.max(1, (int) Math.round(area / rh));
+        }
 
         return new Rect((int) Math.round(c[0] - rw / 2.0),
                         (int) Math.round(c[1] - rh / 2.0), rw, rh);
+    }
+
+    /** Polygon area in square tiles, for callers comparing against a dataset. */
+    public static double area(double[][] pts) {
+        double[][] p = dedupeExact(pts);
+        return p.length < 3 ? 0 : Math.abs(shoelace(p));
+    }
+
+    /** Drop the closing vertex if the ring repeats its first point. */
+    static double[][] dedupeExact(double[][] p) {
+        int n = p.length;
+        if (n > 1 && p[0][0] == p[n - 1][0] && p[0][1] == p[n - 1][1]) n--;
+        return Arrays.copyOf(p, Math.max(0, n));
     }
 
     /**
