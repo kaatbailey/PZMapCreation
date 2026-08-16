@@ -843,6 +843,8 @@ Acting on any of these wastes real time.
 | The 16-tile mask block contract is uniform | **TRUE for natural ground only.** `blends_street_01` uses **8** masks per block, one variant set, not two. `Clay` uses 28 (§27). |
 | Indices 112–127 of `blends_natural_01` are an unidentified side-mask set | **They carry `FloorMaterial Clay`.** Why clay has 28 mask indices where every other natural material has 12 is still UNVERIFIED (§27). |
 | `Probe findprop` can measure a distribution | **FALSE.** Hard-capped at 3 hits per cell. It finds an example; it is never a census (§27). |
+| One PZ tile is one metre (assumed since the first import) | **CONFIRMED to 0.4%**, and only now. Total building tiles 1,409 against the dataset's own `SQMETERS` sum of 1,403 across seven footprints. The whole coordinate path rested on this and nothing had ever checked it (§32). |
+| `GisImport.project` is a harmless coordinate conversion | **FALSE — it was quantising before measurement.** Rounding every vertex to an integer tile cost 2–7% of every footprint's area, always downward: all seven measured below their recorded `SQMETERS`. The loss is unrecoverable afterwards, because `FootprintSnap` never saw the precision (§32). |
 | The jagged buildings were a room-rect problem | **FALSE, twice over.** `RoomShapes` on our own map: 8 rooms, 8 rects, fill ratio **1.000**, zero staircases — the room rects were already perfect rectangles. Nor was it a `deriveWalls` problem. The **raster** was: `fillPolygon` wrote the real 37–80° outline into `Cover.BUILDING`, and `deriveWalls` traced that while the room rect was computed separately as a bounding box (§31). |
 | Buildings are rasterised as polygons, which snaps them to the grid for free (`GisImport` javadoc) | **FALSE.** Rasterising a polygon snaps its *tiles* to the grid; it does not make its *edges* axis-parallel, and the format needs the latter. The javadoc asserted the opposite of what the code needed to do for eleven days (§31). |
 | §17: rotate the whole scene by the dominant footprint angle before rasterizing | **PREMISE FAILS on rural data, and is unnecessary anyway.** `FootprintAngles` over the current import: 7 footprints at 37, 61, 65, 71, 76, 80°, best ±3° window holding **33.3%** of area against §17's predicted "well over half". Scattered farmsteads each face their own driveway; there is no street grid because there is no street. And the target angle never needed discovering — see §30. |
@@ -2788,4 +2790,97 @@ another straight run down the east. No steps anywhere.
    floor tile and nothing above, so a building is a black void with walls. Now
    the most visible defect, since straight walls no longer distract from it.
    A-track, and E13's subdivision work sits on top of it.
+
+
+---
+
+## 32. The scale is verified, and the snap keeps its precision
+
+2026-08-14, immediately after §31. Prompted by adding an area cross-check that
+fired on its first run.
+
+### One PZ tile is one metre — CONFIRMED to 0.4%
+
+The footprints are FEMA/ORNL USA Structures, and every feature carries its own
+`SQMETERS`. Comparing that against the tiles we write is a free check of the
+entire projection-and-snap path, and it did not exist until now.
+
+**Total building tiles 1,409 against `SQMETERS` summing 1,403** over seven
+footprints — 0.4% over. Before the precision fix it was 1,391, 0.9% under.
+
+Every import since the first has assumed one tile is one metre. **Nothing had
+ever verified it.** It holds.
+
+### Two quantisation losses were stacking, both downward
+
+The check reported a worst case of **27.9%** — a building the dataset records
+at 83.3 m² rendered as a 12×5 = 60 tile rectangle.
+
+**First loss: `GisImport.project` rounded every vertex to an integer tile
+before `FootprintSnap` could measure the polygon.** All seven footprints
+measured below their recorded area — 122.5 against 127.4, 164.0 against 169.1,
+175.0 against 179.8 — never above. A systematic 2–7% shave, and unrecoverable
+downstream because the precision was already gone.
+
+**Second loss: the rectangle's two sides were rounded independently.** A few
+percent on a large building; dominant on a small one, where a single square is
+a large fraction of a 6-wide side.
+
+### The fix
+
+`projectExact` keeps sub-tile precision and buildings use it. **Roads keep the
+integer `project`** — `thickLine` walks tile centres and wants them.
+
+Rounding now **rounds the longer side and derives the shorter from the area**,
+rather than rounding both. Independent rounding discards the one quantity that
+matters.
+
+| | before | after |
+|---|---|---|
+| total tiles vs `SQMETERS` 1,403 | 1,391 (−0.9%) | **1,409 (+0.4%)** |
+| worst single building | **27.9%** | **13.5%** |
+| 15% warning | fires every import | silent |
+
+The 13.5% residual is not ours. That footprint's polygon measures 77–81.5 m²
+depending on projection origin, so the dataset's own 83.3 sits ~5% above the
+geometry it ships with. We round 77 down to 72: one square on a 6-wide side,
+the irreducible cost of an integer grid.
+
+### Why this was worth fixing rather than muting
+
+A 5% area error is invisible in game. What made it worth an hour is that **the
+check would have fired on every single import**, and a warning that always
+fires is one that gets ignored — which is precisely how the `findprop` 3-hit
+cap (§27) and the confounded run-length test (§28) each survived a full
+session. A check that cries wolf is worse than no check.
+
+### The import carries far more than we were using
+
+Every USA Structures feature has 36 properties; we read one. Now carried into a
+`GisImport.Building` record, for E13's interior recipes:
+
+| field | why |
+|---|---|
+| `OCC_CLS` | the coarse class. Vocabulary is small — Residential, Commercial, Industrial, Agriculture, Education, Government, Utility, Religion, Assembly, Unclassified — so a per-class recipe is tractable, not a taxonomy problem. |
+| `PRIM_OCC` | the finer class. Duplicates `OCC_CLS` on this rural extract; in a town it splits Commercial into retail, office, restaurant. |
+| `OUTBLDG` | flags an outbuilding. Null on all seven here, but it is the barn-versus-farmhouse distinction, and a barn wants one undivided room. |
+| `SQMETERS` | the dataset's own area — the cross-check above. |
+
+`HEIGHT` is null throughout this extract, so storeys cannot be derived from it.
+
+This extract holds `Agriculture` ×1 and `Residential` ×6, at 39.05N 83.64W in
+Highland County, Ohio.
+
+### OPEN
+
+1. **`FootprintSnap.hull` can return a duplicate vertex.** Observed on the
+   83.3 m² footprint: `[88,-143]` appeared twice in the hull. Harmless for the
+   minimum-area rectangle, but it means near-degenerate rings reach the
+   rotating calipers, and on a smaller building two vertices could merge
+   entirely. Andrew's monotone chain with `<= 0` should collapse collinear
+   points; it did not here.
+2. **`$GISMAP` silently empties** between fish sessions and has now cost three
+   round trips, failing differently each time — `NoSuchFileException` on a cell
+   name read as a path, `ArrayIndexOutOfBoundsException`, and empty output
+   under `2>/dev/null`. Set it in the same command as any probe that uses it.
 

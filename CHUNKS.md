@@ -85,7 +85,7 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 | `[ ]` | **E2** Calibrate density values | E1 | Values by occupancy class, not one constant |
 | `[x]` | **E3** Ground blending investigation | — | **CLOSED 2026-08-13. Mechanism CONFIRMED** (STATE §26, `docs/E3_GROUND_BLENDING.md`) |
 | | **E4** Scene rotation pass | — | **RETIRED 2026-08-14.** Premise fails and it was never needed (STATE §30) |
-| `[ ]` | **E5** `FootprintSnap` | — | **Shared with the editor.** Axis-aligned rectangle of matching area; jaggedness cannot occur |
+| `[x]` | **E5** `FootprintSnap` | — | **CLOSED 2026-08-14. Buildings are rectangles** (STATE §31, §32, `docs/e5_buildings.png`) |
 | `[ ]` | **E13** Interior subdivision | E5 | Typed rooms per building from vanilla's vocabulary. We write 1 box; vanilla writes a cluster |
 | `[ ]` | **E6** Extract `BiomeMapWriter` distance banding | — | Small. Three consumers want a region signal |
 | `[x]` | **E7** Ground precedence and dither generality | E3 | **CLOSED 2026-08-13. Priority table CONFIRMED** over 4,065 cells (STATE §27, `docs/E7_GROUND_PRECEDENCE.md`) |
@@ -130,7 +130,12 @@ finished and verified in game. The E-track now has only refinements left, so
 the next substantial work is the tree-ownership gate that has blocked A2 since
 2026-08-11. The order is now:
 
-**A2-gate → B1 → B2 → C1**, with E10, E11, E12 and A3-pre1/pre2 available as
+**AMENDED 2026-08-14.** E5 is closed — buildings are axis-aligned rectangles,
+verified by `Probe roomgeom` at 100% and in game. The owner's stated goal is a
+real building of the right type on each footprint, and the gap is now interior
+subdivision rather than geometry, so E13 comes first:
+
+**E13 → A2-gate → B1 → B2 → C1**, with E10, E11, E12 and A3-pre1/pre2 available as
 small fillers at any point.
 
 **E3 first (RESOLVED 2026-08-14 — E3, E7 and E8 are closed and the ground defect is fixed; kept as the record of why this line of work came first.)** Ground appearance was the most immersion-breaking defect on the
@@ -165,6 +170,30 @@ Every prompt below assumes this, and every prompt written later must include it:
 ### Standing environment notes
 
 Added 2026-08-11 after each of these cost real time.
+
+### `$GISMAP` empties between shells — set it in the same command
+
+Fish variables do not survive a new shell, and an empty `$GISMAP` fails
+*differently* every time, which is why it has cost three separate round trips:
+
+```
+NoSuchFileException: 200_200/200_201.lotheader     # cell name read as a path
+ArrayIndexOutOfBoundsException: Index 3            # argument count short by one
+(nothing at all)                                   # under 2>/dev/null
+```
+
+None of those says "the variable is empty". Set it in the same command block as
+whatever uses it:
+
+```fish
+set GISMAP ~/Zomboid/mods/PZGisImport/common/media/maps/PZGisImport
+java -cp out pzformat.Probe roomgeom "$PZ/media" $GISMAP 200_201
+```
+
+`Probe roomgeom` prints rect coordinates only in its *excluded* branch, so once
+rooms are axis-aligned there is nothing to grep for them. Use
+`Probe findprop "$PZ/media" $GISMAP CELL WallN` to locate a building instead —
+its 3-hit cap is exactly right for that.
 
 ### `Probe findprop` finds an example, never all of them
 
