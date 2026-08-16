@@ -843,6 +843,8 @@ Acting on any of these wastes real time.
 | The 16-tile mask block contract is uniform | **TRUE for natural ground only.** `blends_street_01` uses **8** masks per block, one variant set, not two. `Clay` uses 28 (§27). |
 | Indices 112–127 of `blends_natural_01` are an unidentified side-mask set | **They carry `FloorMaterial Clay`.** Why clay has 28 mask indices where every other natural material has 12 is still UNVERIFIED (§27). |
 | `Probe findprop` can measure a distribution | **FALSE.** Hard-capped at 3 hits per cell. It finds an example; it is never a census (§27). |
+| Room count does not decide whether a building has a hallway | **FALSE.** It decides it almost by itself: 6.1% of 2–3 room buildings have one, 14.4% at 4–5, **57.3% at 6–7**, 84.9% at 8–10, 90% above. A clean sigmoid with the transition at 6–7 rooms. Asserted twice in-session that access rather than size was the factor; access is the *reason*, room count is what predicts it (§33). |
+| The GIS footprint should decide what each building becomes | **SUPERSEDED by an owner decision, 2026-08-14.** GIS is authoritative for what EXISTS; gameplay is additive. Every real footprint stays a real building of its real class, and where the game needs something the data lacks it is **added** and attached to a host — never reclassified. Reclassification would destroy the provenance distinction permanently and invisibly (§33). |
 | One PZ tile is one metre (assumed since the first import) | **CONFIRMED to 0.4%**, and only now. Total building tiles 1,409 against the dataset's own `SQMETERS` sum of 1,403 across seven footprints. The whole coordinate path rested on this and nothing had ever checked it (§32). |
 | `GisImport.project` is a harmless coordinate conversion | **FALSE — it was quantising before measurement.** Rounding every vertex to an integer tile cost 2–7% of every footprint's area, always downward: all seven measured below their recorded `SQMETERS`. The loss is unrecoverable afterwards, because `FootprintSnap` never saw the precision (§32). |
 | The jagged buildings were a room-rect problem | **FALSE, twice over.** `RoomShapes` on our own map: 8 rooms, 8 rects, fill ratio **1.000**, zero staircases — the room rects were already perfect rectangles. Nor was it a `deriveWalls` problem. The **raster** was: `fillPolygon` wrote the real 37–80° outline into `Cover.BUILDING`, and `deriveWalls` traced that while the room rect was computed separately as a bounding box (§31). |
@@ -2883,4 +2885,177 @@ Highland County, Ohio.
    round trips, failing differently each time — `NoSuchFileException` on a cell
    name read as a path, `ArrayIndexOutOfBoundsException`, and empty output
    under `2>/dev/null`. Set it in the same command as any probe that uses it.
+
+
+---
+
+## 33. The building recipe — measured, and the rule that governs it
+
+2026-08-14. Three read-only classes: `RoomCluster` (rooms into buildings, then
+size-conditioned types, parcel companions and host distance) and `HallRule`
+(what distinguishes a building with a hallway from one without). No code
+changed.
+
+### The governing decision — owner, 2026-08-14
+
+**GIS is authoritative for what exists. Gameplay is additive.**
+
+Every real footprint stays a real building of its real class. Where the game
+needs something the data does not supply, it is **added and attached to a GIS
+building** — a garage beside a house, a barn near the farmhouse — rather than
+reclassifying a house into a shed.
+
+Two reasons, and the second is the stronger one:
+
+1. Real-world data does not balance for gameplay, and this is going in a game.
+   **Room type IS loot type**: `garagestorage` gates tools and fuel,
+   `farmstorage` gates seed. A town of nothing but houses is one where whole
+   item categories never spawn, so the *tail* of the distribution is
+   gameplay-critical and must not be rounded away.
+2. Reclassification destroys the provenance distinction permanently and
+   invisibly. Additive placement keeps the two sources separable, so a future
+   session can always ask which buildings came from data and which we added.
+
+**Consequence:** a synthesised building must record its host, so a parcel stays
+a parcel. `GisImport.Building` needs a provenance field — cheap now, impossible
+to reconstruct later.
+
+### Clustering rooms into buildings
+
+`LotHeader` rooms carry no building id, so rooms are unioned when their rects
+touch or sit one square apart — one square because a wall lives on the shared
+edge. Unioned across floors too, since a two-storey house is one building.
+
+Over 4,065 cells: **9,038 buildings from 85,585 interior rooms**, plus 5,242
+`emptyoutside` yards excluded (they touch several buildings and would bridge
+them into one blob).
+
+**Known limits, both inflating the tail:** a terrace or strip mall merges into
+one building, and a building straddling a cell boundary counts as two. The
+floors histogram shows the damage — 17, 24, 28 "floors" are downtown blocks
+unioning vertically. **Do not read floor counts off this.** Room counts and
+type sets are unaffected.
+
+### Size predicts type, strongly
+
+Sampling the global mix unconditioned would give 80-square garages and
+12-square houses. It does not:
+
+| footprint | n | most common |
+|---|---|---|
+| ≤24 | 2,049 | **`garagestorage` 52.0%**, `empty` 10.2%, `shed` 3.6% |
+| 25–60 | 1,477 | 4-room dwelling core 20.2%, +closet 14.4%, `garagestorage` 12.4% |
+| 61–120 | 3,293 | **5-room core 28.5%**, 4-room 11.8%, +office 4.3% |
+| 121–240 | 1,084 | core + garage + hall + laundry 4.5%, `barn` 3.7% |
+| 241–480 | 663 | core + kidsbedroom 22.2%, `empty + producestorage` 5.0% |
+| >480 | 472 | fragmented — `catwalk + railroadrepair`, warehouses |
+
+The dwelling core is `bathroom + bedroom + closet + kitchen + livingroom`,
+14.2% of all buildings; without closet 7.7%; with kidsbedroom 4.5%. **Counts
+when present:** bathroom 2.75, bedroom 2.45, livingroom 2.39, kitchen 1.61 —
+a house is two-ish bathrooms and bedrooms, one kitchen.
+
+`garagestorage` alone is the **second most common building in Muldraugh at
+14.0%**. The outbuilding case is a seventh of everything, not an edge case.
+
+### What accompanies a dwelling, and how near
+
+**45.1% of dwellings have an outbuilding within 40 squares; 37.8% specifically
+have a `garagestorage`.** Then `shed` 2.6%, `picnic` 1.2%, `garage` 0.8%,
+`farmstorage` 0.7%, `barn` 0.6%.
+
+Host distance, Chebyshev between centres: **p10 8, median 18, p90 94.** The
+type breakdown is what makes the 40-square cutoff meaningful rather than
+arbitrary:
+
+| type | n | mean | within 40 |
+|---|---|---|---|
+| `garagestorage` | 1,181 | 18.8 | **93.4%** |
+| `shed` | 75 | 38.3 | 73.3% |
+| `farmstorage` | 40 | 47.5 | 47.5% |
+| `grocery` | 26 | 73.5 | 34.6% |
+| `electronicsstore` | 25 | 90.7 | 24.0% |
+
+A garage is genuinely attached to its house. A grocery is merely elsewhere in
+town and the nearest-dwelling search found it anyway. **40 squares separates
+"outbuilding of this parcel" from "unrelated building nearby".**
+
+Measured per cell, so a host across a boundary is missed — biases the
+distribution SHORT, never long.
+
+### Vanilla's buildings are the same size as our footprints
+
+p10 4×3 = 12, **median 10×8 = 80**, p90 18×19 = 342 squares. Our GIS
+footprints are 76–341 m² at one square per metre — the same range. **Our
+buildings are not too large**; they sit between vanilla's median and its p90.
+
+### The hallway rule — room count, and the transition is at 6–7
+
+`hall` appears in only 17.4% of buildings, so 82.6% connect door-to-door with
+no corridor. A subdivider that always cuts a hallway would be wrong five times
+in six. Five candidate discriminators were measured at once so the data would
+pick:
+
+| | with hall | without |
+|---|---|---|
+| rooms, median | **9** | **4** |
+| area, median | 120 | 80 |
+| aspect ratio | 1.27 | 1.33 |
+| private room fraction | 0.50 | 0.50 |
+| would route through a private room | **28.2%** | **1.9%** |
+
+**Aspect ratio and private fraction explain nothing.** Room count separates:
+
+| rooms | hall rate |
+|---|---|
+| 2–3 | **6.1%** |
+| 4–5 | 14.4% |
+| 6–7 | **57.3%** |
+| 8–10 | 84.9% |
+| 11–15 | 90.0% |
+| 16+ | 87.5% |
+
+**A clean sigmoid with the transition at 6–7 rooms.** Under 6, connect
+door-to-door; from 8, use a hall.
+
+The private-routing test is real but secondary — 28.2% against 1.9% is a 15×
+ratio, so it is a genuine signal, but it fires on only a quarter of
+hall-having buildings. **Access is the underlying reason; room count is what
+predicts when access breaks down.** At 8+ rooms in a rectangle you cannot
+arrange things so everything is reachable without either a corridor or walking
+through bedrooms.
+
+A further 17.0% of hall-having buildings become **adjacency-disconnected** with
+their hall removed, against 0.0% of hall-less ones — for a third of these the
+hall is structurally load-bearing, not merely convenient.
+
+### What E13 now has, and what it still needs
+
+**Measured and ready:** which rooms by footprint size; how many of each;
+whether to cut a hall; what to add to a parcel and at what distance; that our
+footprint sizes match vanilla's.
+
+**Design settled:** sample the distribution rather than always taking the mode,
+with guardrails so a small import is never pathological; `OCC_CLS =
+Agriculture` gets a `barn` interior outright, because that is real data telling
+us what the building is.
+
+**Still unmeasured — the layout itself.** The recipe says *which* rooms, not
+where. §30 found 93% of vanilla rooms are ≤3 rects and 64.5% exactly one, so a
+recursive split into axis-aligned sub-rectangles should match the shape
+vocabulary. Unverified: whether vanilla's internal walls span their region
+(a BSP signature) or meet in T-junctions and pinwheels, and what the room area
+ratios are by type — a bathroom is small, a livingroom large, and if those
+ratios are stable the subdivider can allocate by type rather than splitting
+evenly and labelling afterwards.
+
+### OPEN
+
+1. The layout measurement above.
+2. **Every room must be reachable**, which is Charter §1's *"room with no
+   exit"* validation seen from the other side. Generate it correctly and you
+   can detect it — A4 should inherit whatever E13 builds, the way A3 inherits
+   `MaskRule`.
+3. Detached garages are **too small to appear in USA Structures at all** —
+   bucket A is empty in our import. Every garage on our map will be synthesised.
 

@@ -86,7 +86,8 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 | `[x]` | **E3** Ground blending investigation | — | **CLOSED 2026-08-13. Mechanism CONFIRMED** (STATE §26, `docs/E3_GROUND_BLENDING.md`) |
 | | **E4** Scene rotation pass | — | **RETIRED 2026-08-14.** Premise fails and it was never needed (STATE §30) |
 | `[x]` | **E5** `FootprintSnap` | — | **CLOSED 2026-08-14. Buildings are rectangles** (STATE §31, §32, `docs/e5_buildings.png`) |
-| `[ ]` | **E13** Interior subdivision | E5 | Typed rooms per building from vanilla's vocabulary. We write 1 box; vanilla writes a cluster |
+| `[ ]` | **E14** Room layout inside a rectangle | — | **A document.** BSP or not, and room area by type. The last unmeasured piece |
+| `[ ]` | **E13** Interior subdivision | E5, E14 | Typed rooms per building from vanilla's vocabulary. We write 1 box; vanilla writes a cluster |
 | `[ ]` | **E6** Extract `BiomeMapWriter` distance banding | — | Small. Three consumers want a region signal |
 | `[x]` | **E7** Ground precedence and dither generality | E3 | **CLOSED 2026-08-13. Priority table CONFIRMED** over 4,065 cells (STATE §27, `docs/E7_GROUND_PRECEDENCE.md`) |
 | `[x]` | **E8** Region layer and the dither law | E7 | **CLOSED 2026-08-14. The scattered-diamond defect is FIXED** (STATE §28, `docs/e8_final.png`) |
@@ -135,7 +136,12 @@ verified by `Probe roomgeom` at 100% and in game. The owner's stated goal is a
 real building of the right type on each footprint, and the gap is now interior
 subdivision rather than geometry, so E13 comes first:
 
-**E13 → A2-gate → B1 → B2 → C1**, with E10, E11, E12 and A3-pre1/pre2 available as
+**AMENDED 2026-08-14.** E13's recipe is measured (STATE §33) — which rooms by
+footprint size, how many of each, when to cut a hall, what to add to a parcel
+and how near. One piece is missing: how vanilla arranges rooms inside a
+rectangle. E14 measures it, then E13 builds.
+
+**E14 → E13 → A2-gate → B1 → B2 → C1**, with E10, E11, E12 and A3-pre1/pre2 available as
 small fillers at any point.
 
 **E3 first (RESOLVED 2026-08-14 — E3, E7 and E8 are closed and the ground defect is fixed; kept as the record of why this line of work came first.)** Ground appearance was the most immersion-breaking defect on the
@@ -875,6 +881,97 @@ store chosen. Shapes only:
 
 ---
 
+## E13 — Interior subdivision
+
+**This chunk builds.** After it, a generated building has typed rooms instead
+of one open box, and the map has the outbuildings gameplay needs without
+losing a single real footprint.
+
+**Read first:** STATE §33 (the whole recipe), §31 and §32 (buildings are
+rectangles, and the scale is verified), §30 (vanilla's shape vocabulary).
+**Read E14's document for the layout.** The recipe below is CONFIRMED over
+9,038 vanilla buildings — **do not re-measure it.**
+
+## The governing rule — owner decision, 2026-08-14
+
+**GIS is authoritative for what exists. Gameplay is additive.**
+
+Every real footprint stays a real building of its real class. Where the game
+needs something the data does not supply, **add** it and attach it to a host —
+never reclassify a house into a shed. Room type is loot type: a town of only
+houses is one where tools, fuel and seed never spawn.
+
+A synthesised building **must record its host**, so a parcel stays a parcel and
+a future session can always separate imported from added.
+
+## What to build
+
+1. **Assign an interior to each real footprint.** By `OCC_CLS` where the data
+   speaks, by footprint size where it does not:
+
+   | input | interior |
+   |---|---|
+   | `OCC_CLS = Agriculture` | `barn`, outright — real data saying what it is |
+   | `OUTBLDG` set | single-room outbuilding |
+   | ≤24 squares | `garagestorage` 52%, `empty`, `shed` |
+   | 25–60 | 4-room dwelling core |
+   | 61–120 | 5-room core with closet |
+   | 121–240 | core + garage + hall + laundry |
+   | 241–480 | core + kidsbedroom |
+
+   **Sample the distribution, do not always take the mode** — vanilla's bucket
+   C is 28.5 / 11.8 / 4.3 / 4.0 / 3.5, a real spread. **With guardrails:** a
+   small import must never come out pathological, so guarantee the modal set
+   appears at least once and never produce a dwelling without a bathroom.
+
+2. **Room counts.** Vanilla's means when present: bathroom 2.75, bedroom 2.45,
+   livingroom 2.39, kitchen 1.61. A house is two-ish bathrooms and bedrooms,
+   one kitchen — not one of each.
+
+3. **Cut a hall by room count.** 2–3 rooms 6.1%, 4–5 14.4%, **6–7 57.3%**,
+   8–10 84.9%, 11+ ~90%. Under 6 connect door-to-door; from 8 use a hall. The
+   *reason* is access — at 8+ rooms you cannot reach everything without either
+   a corridor or walking through bedrooms — but **room count is what predicts
+   it**, and it predicts it well.
+
+4. **Add the missing outbuildings, attached to a host.** 37.8% of vanilla
+   dwellings have a `garagestorage` within 40 squares, then `shed` 2.6%,
+   `picnic` 1.2%, `farmstorage` 0.7%, `barn` 0.6%. Place at **8–18 squares**
+   from the host (p10 8, median 18), on clear ground, respecting the yard and
+   not colliding with roads or other buildings. **Detached garages are too
+   small to appear in USA Structures at all**, so every garage on our map will
+   be synthesised.
+
+5. **Every room must be reachable.** This is Charter §1's *"room with no exit"*
+   validation seen from the other side. Build it so A4 can inherit it, the way
+   A3 inherits `MaskRule`.
+
+## Definition of done
+
+- A generated building has typed rooms, and `RoomCluster` pointed at our own
+  map reports a rooms-per-building distribution and type sets resembling
+  vanilla's. **That is the test** — same instrument, both maps, as `MaskAudit`
+  and `roomgeom` both proved.
+- Hall rate by room count within a few points of §33's sigmoid.
+- Every room reachable from the exterior; zero rooms with no exit.
+- A render, and an in-game look.
+
+## Falsification
+
+Predict the rooms-per-building histogram and the hall rate before running
+`RoomCluster` on our output. Name what a broken subdivider that still runs
+would look like — hint: rooms present but all the same size is a different
+failure from rooms present but unreachable, and only one of them is visible in
+a render.
+
+## Do not
+
+- Do not re-measure the recipe, the host distance or the hall rule.
+- Do not reclassify a GIS building to fill a gameplay gap. Add.
+- Do not touch the ground layers. E9 closed them.
+
+---
+
 ## E1 — Zombie density  ✅ DONE 2026-08-11
 
 > `chunkGrid` was all zeros, which is why the generated map had no zombies at
@@ -893,7 +990,7 @@ store chosen. Shapes only:
 
 ---
 
-## E2 / E4 / E5 / E6 / E10 / E11 / E12 / E13 — stubs
+## E2 / E4 / E5 / E6 / E10 / E11 / E12 / E14 — stubs
 
 - **E2 Calibrate density.** 2 near buildings is at the low end of vanilla's
   0–10 range, and seven buildings is a hamlet, not a town. The import already
@@ -933,6 +1030,18 @@ store chosen. Shapes only:
   two thin rects offset by 1 on both axes, which is every L-shaped closet, and
   its 1,334 "diagonal runs" were false positives. The answer decides whether
   the snap may refuse off-axis input outright.
+- **E14 Room layout inside a rectangle.** **A document.** The recipe says
+  which rooms; it does not say where. Two things unmeasured. **Is it a BSP?**
+  A binary space partition leaves a signature — every internal wall spans the
+  full width or height of the region it divides. If vanilla is BSP-like a
+  recursive split reproduces it exactly; if rooms meet in T-junctions and
+  pinwheels, a naive BSP will look subtly wrong. **What are the area ratios by
+  type?** A bathroom is small, a livingroom large. If the ratios are stable the
+  subdivider can allocate area by type rather than splitting evenly and
+  labelling afterwards — the difference between a plausible house and a grid of
+  equal boxes. Predict both before running; §30 already found 93% of rooms are
+  ≤3 rects and 64.5% exactly one, so a clean partition is the working
+  hypothesis.
 - **E13 Interior subdivision.** STATE §30: we write **8 rooms for 7
   buildings**, one open box each, where vanilla writes a cluster — bathroom,
   bedroom, livingroom, kitchen, closet. That is what makes a building read as
