@@ -86,8 +86,8 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 | `[x]` | **E3** Ground blending investigation | — | **CLOSED 2026-08-13. Mechanism CONFIRMED** (STATE §26, `docs/E3_GROUND_BLENDING.md`) |
 | | **E4** Scene rotation pass | — | **RETIRED 2026-08-14.** Premise fails and it was never needed (STATE §30) |
 | `[x]` | **E5** `FootprintSnap` | — | **CLOSED 2026-08-14. Buildings are rectangles** (STATE §31, §32, `docs/e5_buildings.png`) |
-| `[ ]` | **E14** Room layout inside a rectangle | — | **A document.** BSP or not, and room area by type. The last unmeasured piece |
-| `[ ]` | **E13** Interior subdivision | E5, E14 | Typed rooms per building from vanilla's vocabulary. We write 1 box; vanilla writes a cluster |
+| `[x]` | **E14** Room layout inside a rectangle | — | **CLOSED 2026-08-14. A BSP plus a circulation pass** (STATE §34) |
+| `[~]` | **E13** Interior subdivision | E5, E14 | **IN PROGRESS.** Walls, doors and minimums work; the room-list loop does not (STATE §35) |
 | `[ ]` | **E6** Extract `BiomeMapWriter` distance banding | — | Small. Three consumers want a region signal |
 | `[x]` | **E7** Ground precedence and dither generality | E3 | **CLOSED 2026-08-13. Priority table CONFIRMED** over 4,065 cells (STATE §27, `docs/E7_GROUND_PRECEDENCE.md`) |
 | `[x]` | **E8** Region layer and the dither law | E7 | **CLOSED 2026-08-14. The scattered-diamond defect is FIXED** (STATE §28, `docs/e8_final.png`) |
@@ -141,7 +141,10 @@ footprint size, how many of each, when to cut a hall, what to add to a parcel
 and how near. One piece is missing: how vanilla arranges rooms inside a
 rectangle. E14 measures it, then E13 builds.
 
-**E14 → E13 → A2-gate → B1 → B2 → C1**, with E10, E11, E12 and A3-pre1/pre2 available as
+**AMENDED 2026-08-14.** E14 is closed and E13 is part-built — see its prompt
+for exactly what works and what does not. Finishing E13 is the next work:
+
+**E13 (finish) → A2-gate → B1 → B2 → C1**, with E10, E11, E12 and A3-pre1/pre2 available as
 small fillers at any point.
 
 **E3 first (RESOLVED 2026-08-14 — E3, E7 and E8 are closed and the ground defect is fixed; kept as the record of why this line of work came first.)** Ground appearance was the most immersion-breaking defect on the
@@ -881,94 +884,79 @@ store chosen. Shapes only:
 
 ---
 
-## E13 — Interior subdivision
+## E13 — Interior subdivision  `[~]` PART-BUILT
 
-**This chunk builds.** After it, a generated building has typed rooms instead
-of one open box, and the map has the outbuildings gameplay needs without
-losing a single real footprint.
+**Do not start over.** Most of this chunk works and is verified. One algorithm
+in the middle of it does not. STATE §35 is the full record; this is the short
+version.
 
-**Read first:** STATE §33 (the whole recipe), §31 and §32 (buildings are
-rectangles, and the scale is verified), §30 (vanilla's shape vocabulary).
-**Read E14's document for the layout.** The recipe below is CONFIRMED over
-9,038 vanilla buildings — **do not re-measure it.**
+**Read first:** STATE §35 (this chunk's state), §34 (layout and area ratios),
+§33 (the recipe and the hall rule), §31 (buildings are rectangles).
 
-## The governing rule — owner decision, 2026-08-14
+## What already works — leave it alone
 
-**GIS is authoritative for what exists. Gameplay is additive.**
+- **Typed rooms** written to the lotheader, room membership stamped per square.
+  `RoomCluster` on our own map reads back ~44 rooms across 8 buildings.
+- **Interior walls**, one per boundary, correct square and orientation (§18).
+- **Doors on a SPANNING TREE**, so no room can be walled in. Structural, not
+  probabilistic. A4 should walk the same graph in reverse.
+- **Exterior doors**, verified in the data at 200_201 (43,69) and (43,84).
+  Invisible in a render because `CellRenderer` draws the wall over them — that
+  is the renderer, not the map.
+- **The house grammar**, measured against 283 vanilla houses: the exterior door
+  never opens into a bedroom (1 of 229), the livingroom faces the road, the
+  kitchen is opposite, and **the livingroom/kitchen boundary is usually OPEN**
+  (55.4% fully open, only 8.2% fully walled).
+- **The aspect fix in `split`** — try both axes, keep the better worst-case
+  aspect. Took the worst room from 7.0 to 4.0.
+- **Room minimums, measured** (`RoomMinimums`): bedroom 3×3, bathroom 2 short,
+  livingroom 4 short, kitchen 3 short. All four required rooms appear in houses
+  as small as 30 squares.
 
-Every real footprint stays a real building of its real class. Where the game
-needs something the data does not supply, **add** it and attach it to a host —
-never reclassify a house into a shed. Room type is loot type: a town of only
-houses is one where tools, fuel and seed never spawn.
+## What to finish
 
-A synthesised building **must record its host**, so a parcel stays a parcel and
-a future session can always separate imported from added.
+**1. The room-list loop.** The rule, from the owner:
 
-## What to build
+> livingroom, kitchen, bathroom and at least one bedroom are REQUIRED and have
+> minimum sizes. Further bedrooms are added until the space runs out. Closets,
+> laundry and storage are the LEFTOVER, not peers with targets.
 
-1. **Assign an interior to each real footprint.** By `OCC_CLS` where the data
-   speaks, by footprint size where it does not:
+The prototype produces three bathrooms for three bedrooms, and stops growing
+past ~173 squares so a 500 m² house gets 13 rooms at 32% fill. **Vanilla has
+about one bathroom per house at these sizes.** The minimums are right; the loop
+that consumes them is not.
 
-   | input | interior |
-   |---|---|
-   | `OCC_CLS = Agriculture` | `barn`, outright — real data saying what it is |
-   | `OUTBLDG` set | single-room outbuilding |
-   | ≤24 squares | `garagestorage` 52%, `empty`, `shed` |
-   | 25–60 | 4-room dwelling core |
-   | 61–120 | 5-room core with closet |
-   | 121–240 | core + garage + hall + laundry |
-   | 241–480 | core + kidsbedroom |
+**2. Place the core as a BLOCK, not a band.** `plan` still gives the livingroom
+the full frontage, so a 30×6 building gets a 30×2 livingroom at aspect 15.0.
+**The self-test fails on exactly this case and should stay failing until it is
+fixed.** Give the core a share of the frontage with a secondary room beside it.
 
-   **Sample the distribution, do not always take the mode** — vanilla's bucket
-   C is 28.5 / 11.8 / 4.3 / 4.0 / 3.5, a real spread. **With guardrails:** a
-   small import must never come out pathological, so guarantee the modal set
-   appears at least once and never produce a dwelling without a bathroom.
-
-2. **Room counts.** Vanilla's means when present: bathroom 2.75, bedroom 2.45,
-   livingroom 2.39, kitchen 1.61. A house is two-ish bathrooms and bedrooms,
-   one kitchen — not one of each.
-
-3. **Cut a hall by room count.** 2–3 rooms 6.1%, 4–5 14.4%, **6–7 57.3%**,
-   8–10 84.9%, 11+ ~90%. Under 6 connect door-to-door; from 8 use a hall. The
-   *reason* is access — at 8+ rooms you cannot reach everything without either
-   a corridor or walking through bedrooms — but **room count is what predicts
-   it**, and it predicts it well.
-
-4. **Add the missing outbuildings, attached to a host.** 37.8% of vanilla
-   dwellings have a `garagestorage` within 40 squares, then `shed` 2.6%,
-   `picnic` 1.2%, `farmstorage` 0.7%, `barn` 0.6%. Place at **8–18 squares**
-   from the host (p10 8, median 18), on clear ground, respecting the yard and
-   not colliding with roads or other buildings. **Detached garages are too
-   small to appear in USA Structures at all**, so every garage on our map will
-   be synthesised.
-
-5. **Every room must be reachable.** This is Charter §1's *"room with no exit"*
-   validation seen from the other side. Build it so A4 can inherit it, the way
-   A3 inherits `MaskRule`.
+**3. Elastic resize.** "If you need two more feet to make the bedrooms 10×10,
+extend that part of the house." Nothing does this; rooms land wherever the
+partition puts them.
 
 ## Definition of done
 
-- A generated building has typed rooms, and `RoomCluster` pointed at our own
-  map reports a rooms-per-building distribution and type sets resembling
-  vanilla's. **That is the test** — same instrument, both maps, as `MaskAudit`
-  and `roomgeom` both proved.
-- Hall rate by room count within a few points of §33's sigmoid.
-- Every room reachable from the exterior; zero rooms with no exit.
-- A render, and an in-game look.
+- `java -cp out pzformat.BuildingPlan` passes, including the aspect check.
+- `RoomCluster` on our own map shows a rooms-per-building distribution and type
+  sets resembling vanilla's, and about **one bathroom per house**.
+- **The in-game test, which has never been run.** The doors exist in the data
+  and nobody has walked through one.
 
 ## Falsification
 
-Predict the rooms-per-building histogram and the hall rate before running
-`RoomCluster` on our output. Name what a broken subdivider that still runs
-would look like — hint: rooms present but all the same size is a different
-failure from rooms present but unreachable, and only one of them is visible in
-a render.
+Predict the room counts and the bathroom-per-house figure before running
+`RoomCluster` on our output. Name what a house with the right rooms and the
+wrong proportions looks like — it is not the same failure as one with the wrong
+rooms, and only one of them shows up in a render.
 
 ## Do not
 
-- Do not re-measure the recipe, the host distance or the hall rule.
-- Do not reclassify a GIS building to fill a gameplay gap. Add.
-- Do not touch the ground layers. E9 closed them.
+- Do not re-measure the minimums, the grammar, or the hall rule.
+- Do not rewrite the spanning-tree door pass. It is correct and it is what A4
+  inherits.
+- Do not attempt multi-storey. The rules are recorded in §35; nothing writes at
+  z=1 and stairs do not exist.
 
 ---
 
