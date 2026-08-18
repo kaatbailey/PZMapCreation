@@ -184,22 +184,79 @@ public final class GisCells {
                     }
                 }
 
-                // Rooms from building footprints clipped to this cell.
-                List<int[]> rects = buildingRects(g, ox, oy);
-                for (int[] r : rects) {
-                    LotHeader.Room room = new LotHeader.Room();
-                    room.name = "room";
-                    room.floor = 0;
-                    room.rects.add(r);
-                    h.rooms.add(room);
-                    h.buildings.add(new int[]{h.rooms.size() - 1});
-                    for (int x = r[0]; x < r[0] + r[2]; x++) {
-                        for (int y = r[1]; y < r[1] + r[3]; y++) {
-                            if (x < 256 && y < 256 && cell.tilesAt(x, y, 0) != null) {
-                                cell.setSquare(x, y, 0, cell.tilesAt(x, y, 0),
-                                        h.rooms.size() - 1);
-                            }
+                // Interiors. Planned once per building from its WORLD rect and
+                // clipped to this cell, never re-derived per cell — a building
+                // straddling a boundary would otherwise get two different
+                // interiors, one either side of the line.
+                int roomsHere = 0;
+                // Building footprints clipped to this cell, for
+                // writeChunkDensity — it marks built-up 8x8 chunks and wants
+                // BUILDINGS, not rooms (STATE §23).
+                List<int[]> rects = new ArrayList<>();
+                for (int bi = 0; bi < g.buildings.size(); bi++) {
+                    GisImport.Building b = g.buildings.get(bi);
+                    FootprintSnap.Rect fr = b.rect();
+
+                    // Cell-local, possibly partly or wholly outside.
+                    int bx = fr.x() - ox, by = fr.y() - oy;
+                    if (bx + fr.w() <= 0 || by + fr.h() <= 0
+                            || bx >= 256 || by >= 256) continue;
+
+                    // Seeded per building, not from the per-cell rng, so the
+                    // same building plans identically from either side.
+                    Random brng = new Random(SEED * 131 + bi);
+                    List<String> types = BuildingPlan.recipe(
+                            fr.area(), b.occ(), b.outbuilding(), brng);
+                    BuildingPlan.Facing facing = faceTheRoad(g, fr);
+                    List<BuildingPlan.Room> planned =
+                            BuildingPlan.plan(bx, by, fr.w(), fr.h(), types, facing, brng);
+                    if (planned.isEmpty()) continue;
+
+                    int cx0 = Math.max(bx, 0), cy0 = Math.max(by, 0);
+                    int cx1 = Math.min(bx + fr.w(), 256), cy1 = Math.min(by + fr.h(), 256);
+                    if (cx1 > cx0 && cy1 > cy0)
+                        rects.add(new int[]{cx0, cy0, cx1 - cx0, cy1 - cy0});
+
+                    List<Integer> idx = new ArrayList<>();
+                    for (BuildingPlan.Room pr : planned) {
+                        int x0 = Math.max(pr.x(), 0), y0 = Math.max(pr.y(), 0);
+                        int x1 = Math.min(pr.x() + pr.w(), 256);
+                        int y1 = Math.min(pr.y() + pr.h(), 256);
+                        if (x1 <= x0 || y1 <= y0) {
+                            // Outside this cell. Record a placeholder so `idx`
+                            // stays index-aligned with `planned` — carveInterior
+                            // looks rooms up by planned position.
+                            idx.add(-1);
+                            continue;
                         }
+
+                        LotHeader.Room room = new LotHeader.Room();
+                        room.name = pr.type();
+                        room.floor = 0;
+                        room.rects.add(new int[]{x0, y0, x1 - x0, y1 - y0});
+                        h.rooms.add(room);
+                        int ri = h.rooms.size() - 1;
+                        idx.add(ri);
+                        roomsHere++;
+
+                        for (int x = x0; x < x1; x++)
+                            for (int y = y0; y < y1; y++)
+                                if (cell.tilesAt(x, y, 0) != null)
+                                    cell.setSquare(x, y, 0, cell.tilesAt(x, y, 0), ri);
+                    }
+
+                    carveInterior(cell, pal, planned, idx, brng);
+                    carveEntrances(cell, pal, planned, idx, bx, by,
+                            fr.w(), fr.h(), facing);
+
+                    // One building, all its rooms. The format models this and
+                    // we were writing one index per entry.
+                    if (!idx.isEmpty()) {
+                        List<Integer> real = new ArrayList<>();
+                        for (int v : idx) if (v >= 0) real.add(v);
+                        int[] members = new int[real.size()];
+                        for (int k = 0; k < members.length; k++) members[k] = real.get(k);
+                        if (members.length > 0) h.buildings.add(members);
                     }
                 }
 
@@ -208,7 +265,7 @@ public final class GisCells {
                             roadSpawn[0], roadSpawn[1]});
                 }
 
-                totalRooms += rects.size();
+                totalRooms += roomsHere;
                 totalSquares += squares;
                 totalEdgeFill += edgeFilled;
                 totalTufts += tufts;
@@ -448,6 +505,248 @@ public final class GisCells {
      * @param rects building footprints clipped to this cell, cell-local
      */
     static final int DENSITY_INSIDE = 2, DENSITY_ADJACENT = 1;
+
+    /**
+     * Interior walls between planned rooms, and doors that guarantee every
+     * room is reachable.
+     *
+     * Walls: a wall lives on the north or west edge of a square (§18), so a
+     * square whose north neighbour belongs to a different room gets a north
+     * wall. Only fires between two interior rooms — exteriors are handled by
+     * the raster pass.
+     *
+     * Doors: cut along a SPANNING TREE of the room adjacency graph. A spanning
+     * tree reaches every node by definition, so no room can be walled in — the
+     * guarantee is structural rather than probabilistic, which matters because
+     * an unreachable room is invisible until someone walks into the building.
+     * Charter §1 names "room with no exit" as a validation rule; this is the
+     * same knowledge applied at authoring time.
+     *
+     * @param planned rooms in cell-local coordinates, possibly extending
+     *                outside the cell — a building may straddle a boundary
+     * @param idx     lotheader room index per planned room, -1 where the room
+     *                fell outside this cell entirely
+     */
+    static void carveInterior(CellData cell, TilePalette pal,
+                              List<BuildingPlan.Room> planned,
+                              List<Integer> idx, Random rng) {
+        if (planned.size() < 2 || pal.interiorWallNorth == null) return;
+
+        int wallN = cell.tileIndex(pal.interiorWallNorth);
+        int wallW = cell.tileIndex(pal.interiorWallWest);
+        int doorN = cell.tileIndex(pal.interiorDoorNorth);
+        int doorW = cell.tileIndex(pal.interiorDoorWest);
+
+        // Which planned room owns each square, over this building's extent.
+        int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE;
+        for (BuildingPlan.Room r : planned) {
+            minX = Math.min(minX, r.x()); minY = Math.min(minY, r.y());
+            maxX = Math.max(maxX, r.x() + r.w()); maxY = Math.max(maxY, r.y() + r.h());
+        }
+        int w = maxX - minX, h = maxY - minY;
+        if (w <= 0 || h <= 0) return;
+
+        int[][] owner = new int[w][h];
+        for (int[] col : owner) java.util.Arrays.fill(col, -1);
+        for (int i = 0; i < planned.size(); i++) {
+            BuildingPlan.Room r = planned.get(i);
+            for (int x = r.x(); x < r.x() + r.w(); x++)
+                for (int y = r.y(); y < r.y() + r.h(); y++)
+                    owner[x - minX][y - minY] = i;
+        }
+
+        // Candidate door positions per adjacent room pair, keyed "a:b" with
+        // a < b. Each entry is {x, y, isNorth}.
+        java.util.Map<String, List<int[]>> shared = new java.util.LinkedHashMap<>();
+        List<int[]> walls = new ArrayList<>();          // x, y, isNorth, roomHere
+
+        // §35 R5: 55.4% of vanilla livingroom/kitchen boundaries are FULLY
+        // open and only 8.2% fully walled — they are usually one continuous
+        // space. Decide once per pair so the whole boundary agrees.
+        boolean[][] open = new boolean[planned.size()][planned.size()];
+        for (int a = 0; a < planned.size(); a++)
+            for (int b = a + 1; b < planned.size(); b++) {
+                boolean o = BuildingPlan.openBetween(
+                        planned.get(a).type(), planned.get(b).type(), rng);
+                open[a][b] = o;
+                open[b][a] = o;
+            }
+
+        for (int lx = 0; lx < w; lx++)
+            for (int ly = 0; ly < h; ly++) {
+                int me = owner[lx][ly];
+                if (me < 0) continue;
+                if (ly > 0) {
+                    int other = owner[lx][ly - 1];
+                    if (other >= 0 && other != me && !open[me][other]) {
+                        walls.add(new int[]{lx + minX, ly + minY, 1, me});
+                        shared.computeIfAbsent(key(me, other), k -> new ArrayList<>())
+                              .add(new int[]{lx + minX, ly + minY, 1, me});
+                    }
+                }
+                if (lx > 0) {
+                    int other = owner[lx - 1][ly];
+                    if (other >= 0 && other != me && !open[me][other]) {
+                        walls.add(new int[]{lx + minX, ly + minY, 0, me});
+                        shared.computeIfAbsent(key(me, other), k -> new ArrayList<>())
+                              .add(new int[]{lx + minX, ly + minY, 0, me});
+                    }
+                }
+            }
+
+        // Spanning tree: one door per edge that first connects a new room.
+        int[] parent = new int[planned.size()];
+        for (int i = 0; i < parent.length; i++) parent[i] = i;
+        java.util.Set<String> doorAt = new java.util.HashSet<>();
+
+        List<String> pairs = new ArrayList<>(shared.keySet());
+        for (String p : pairs) {
+            String[] ab = p.split(":");
+            int a = Integer.parseInt(ab[0]), b = Integer.parseInt(ab[1]);
+            List<int[]> cand = shared.get(p);
+            if (cand.isEmpty()) continue;
+
+            boolean join = find(parent, a) != find(parent, b);
+            // Beyond the tree, a modest chance of a second connection — a real
+            // house has more than the minimum.
+            if (!join && rng.nextDouble() >= 0.25) continue;
+            if (join) union(parent, a, b);
+
+            int[] c = cand.get(cand.size() / 2);        // middle of the shared run
+            doorAt.add(c[0] + "," + c[1] + "," + c[2]);
+        }
+
+        for (int[] wsq : walls) {
+            boolean door = doorAt.contains(wsq[0] + "," + wsq[1] + "," + wsq[2]);
+            int tile = wsq[2] == 1 ? (door ? doorN : wallN) : (door ? doorW : wallW);
+            appendTile(cell, wsq[0], wsq[1], tile, roomIndexOf(idx, wsq[3]));
+        }
+    }
+
+    /**
+     * Which way this building faces: toward the nearest road (§35).
+     *
+     * Searched outward from the building's centre in world coordinates, so a
+     * road in the next cell still counts. Falling back to SOUTH when nothing
+     * is near keeps a barn in a field from facing arbitrarily.
+     */
+    static BuildingPlan.Facing faceTheRoad(GisImport g, FootprintSnap.Rect fr) {
+        int cx = fr.x() + fr.w() / 2, cy = fr.y() + fr.h() / 2;
+        for (int r = 1; r <= 80; r++)
+            for (int dx = -r; dx <= r; dx++)
+                for (int dy = -r; dy <= r; dy++) {
+                    if (Math.abs(dx) != r && Math.abs(dy) != r) continue;
+                    int x = cx + dx, y = cy + dy;
+                    if (x < 0 || y < 0 || x >= g.width || y >= g.height) continue;
+                    if (g.cover[x][y] != GisImport.Cover.ROAD) continue;
+                    // The dominant axis of the offset is the face it presents.
+                    if (Math.abs(dx) >= Math.abs(dy))
+                        return dx < 0 ? BuildingPlan.Facing.WEST : BuildingPlan.Facing.EAST;
+                    return dy < 0 ? BuildingPlan.Facing.NORTH : BuildingPlan.Facing.SOUTH;
+                }
+        return BuildingPlan.Facing.SOUTH;
+    }
+
+    /**
+     * Cut a door in the outer wall of each room marked as an entrance.
+     *
+     * §35 R3, measured over 229 vanilla exterior doors: livingroom 31.0%,
+     * kitchen 26.6%, hall 17.9%, laundry 9.6% — and **bedroom 1 of 229**. So
+     * the eligible set is enforced rather than preferred, and a building whose
+     * marked rooms are all clipped away simply gets no door rather than one in
+     * a bedroom.
+     *
+     * The door replaces the exterior wall on that square, which is already
+     * there from the raster pass — appending would leave a wall and a door
+     * stacked on one tile.
+     */
+    static void carveEntrances(CellData cell, TilePalette pal,
+                               List<BuildingPlan.Room> planned, List<Integer> idx,
+                               int bx, int by, int bw, int bh,
+                               BuildingPlan.Facing facing) {
+        if (pal.doorWallNorth == null) return;
+        int doorN = cell.tileIndex(pal.doorWallNorth);
+        int doorW = cell.tileIndex(pal.doorWallWest);
+
+        for (int i = 0; i < planned.size(); i++) {
+            BuildingPlan.Room r = planned.get(i);
+            if (!r.entrance() || !r.canTakeDoor()) continue;
+
+            // The livingroom opens on the front face; the kitchen on the back.
+            BuildingPlan.Facing face = r.type().equals("kitchen")
+                    ? facing.opposite() : facing;
+
+            int x, y;
+            boolean north;
+            switch (face) {
+                case NORTH -> { x = r.x() + r.w() / 2; y = r.y();               north = true; }
+                case SOUTH -> { x = r.x() + r.w() / 2; y = r.y() + r.h();       north = true; }
+                case WEST  -> { x = r.x();             y = r.y() + r.h() / 2;   north = false; }
+                default    -> { x = r.x() + r.w();     y = r.y() + r.h() / 2;   north = false; }
+            }
+            // Only cut where the room genuinely reaches the building's edge —
+            // a clipped room may not.
+            boolean onEdge = switch (face) {
+                case NORTH -> r.y() == by;
+                case SOUTH -> r.y() + r.h() == by + bh;
+                case WEST  -> r.x() == bx;
+                case EAST  -> r.x() + r.w() == bx + bw;
+            };
+            if (!onEdge) continue;
+
+            replaceTile(cell, x, y, north ? doorN : doorW, north,
+                    roomIndexOf(idx, i));
+        }
+    }
+
+    /**
+     * Swap the wall on this square's north or west edge for a door, keeping
+     * everything else in the stack.
+     */
+    static void replaceTile(CellData cell, int x, int y, int tile, boolean north,
+                            int roomId) {
+        if (x < 0 || y < 0 || x >= 256 || y >= 256) return;
+        int[] cur = cell.tilesAt(x, y, 0);
+        if (cur == null) return;
+        // Append rather than filter. The exterior wall is already on this
+        // square from the raster pass, and PZ draws a DoorWall over its wall —
+        // that is how vanilla squares read, carrying both (see any probe of a
+        // vanilla door square).
+        int[] next = new int[cur.length + 1];
+        System.arraycopy(cur, 0, next, 0, cur.length);
+        next[cur.length] = tile;
+        cell.setSquare(x, y, 0, next, roomId);
+    }
+
+    static String key(int a, int b) {
+        return Math.min(a, b) + ":" + Math.max(a, b);
+    }
+
+    static int roomIndexOf(List<Integer> idx, int planned) {
+        return planned >= 0 && planned < idx.size() ? idx.get(planned) : -1;
+    }
+
+    static int find(int[] p, int i) {
+        while (p[i] != i) { p[i] = p[p[i]]; i = p[i]; }
+        return i;
+    }
+
+    static void union(int[] p, int a, int b) {
+        int ra = find(p, a), rb = find(p, b);
+        if (ra != rb) p[ra] = rb;
+    }
+
+    /** Append one tile to a square, keeping its existing stack and room id. */
+    static void appendTile(CellData cell, int x, int y, int tile, int roomId) {
+        if (x < 0 || y < 0 || x >= 256 || y >= 256) return;
+        int[] cur = cell.tilesAt(x, y, 0);
+        if (cur == null) return;
+        int[] next = new int[cur.length + 1];
+        System.arraycopy(cur, 0, next, 0, cur.length);
+        next[cur.length] = tile;
+        cell.setSquare(x, y, 0, next, roomId);
+    }
 
     static void writeChunkDensity(LotHeader h, List<int[]> rects) {
         final int side = LotHeader.GRID_SIDE;          // 32

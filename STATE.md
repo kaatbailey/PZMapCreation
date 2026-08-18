@@ -843,6 +843,9 @@ Acting on any of these wastes real time.
 | The 16-tile mask block contract is uniform | **TRUE for natural ground only.** `blends_street_01` uses **8** masks per block, one variant set, not two. `Clay` uses 28 (§27). |
 | Indices 112–127 of `blends_natural_01` are an unidentified side-mask set | **They carry `FloorMaterial Clay`.** Why clay has 28 mask indices where every other natural material has 12 is still UNVERIFIED (§27). |
 | `Probe findprop` can measure a distribution | **FALSE.** Hard-capped at 3 hits per cell. It finds an example; it is never a census (§27). |
+| The livingroom and kitchen are separated by a wall | **FALSE, and the reverse of a modern intuition.** 55.4% of vanilla livingroom/kitchen boundaries are FULLY OPEN, 33.0% partly, only **8.2% fully walled**. They are usually one continuous space (§35). |
+| Always cutting the longer side keeps rooms well-proportioned | **FALSE for unbalanced splits.** A 2-square closet against a 42-square livingroom cuts nowhere near the middle, so on a wide region the cut pins at the minimum and yields a sliver running the full depth. Worst aspect was 7.0, and a 2×7 closet is 14 squares against vanilla's median of 2 — **the aspect defect and the size defect are the same defect** (§35). |
+| A room's median size is a usable minimum | **FALSE.** Medians and minima differ by 2–3×: livingroom median 32 against a p5 of 16, bedroom 14 against 9, kitchen 21 against 9. The generator needs the p5, because the rule is "required rooms at their minimums, then bedrooms until the space runs out" (§35). |
 | `RoomLayout` found only 10.5% of vanilla buildings recursively splittable, so the layout is not a BSP | **FALSE — the instrument was wrong.** It split on **bounding boxes**, and a room's box is not its shape: an L-shaped livingroom's box swallows whatever sits in its notch, so boxes overlap where the rooms do not. Splitting on **rects** gives **85.0%**, and 2-room buildings go from 66.1% to **100.0%** — which is the check that should have been run first, since two rooms failing to separate is near-impossible (§34). |
 | Room count does not decide whether a building has a hallway | **FALSE.** It decides it almost by itself: 6.1% of 2–3 room buildings have one, 14.4% at 4–5, **57.3% at 6–7**, 84.9% at 8–10, 90% above. A clean sigmoid with the transition at 6–7 rooms. Asserted twice in-session that access rather than size was the factor; access is the *reason*, room count is what predicts it (§33). |
 | The GIS footprint should decide what each building becomes | **SUPERSEDED by an owner decision, 2026-08-14.** GIS is authoritative for what EXISTS; gameplay is additive. Every real footprint stays a real building of its real class, and where the game needs something the data lacks it is **added** and attached to a host — never reclassified. Reclassification would destroy the provenance distinction permanently and invisibly (§33). |
@@ -3167,4 +3170,175 @@ plausible numbers that happened to agree with the hypothesis being tested.
 2. **Multi-rect rooms are 35.7%** and a pure BSP produces only rectangles. Some
    of that is rooms wrapping a hall; the rest is unexplained. E13 can ship
    rectangles-only and look right; this is what would make it look *authored*.
+
+
+---
+
+## 35. Building interiors — E13, partly built and NOT finished
+
+2026-08-14. **Read this section before touching `BuildingPlan`.** A great deal
+was measured and most of it is sound; the room-list algorithm at the end is
+mid-rewrite and demonstrably wrong. Both are recorded.
+
+### What works, and is verified
+
+**Interiors exist.** `BuildingPlan` produces typed room rects, `GisCells`
+writes them into the lotheader and stamps room membership per square.
+`RoomCluster` pointed at our own map reads back ~44 rooms across 8 buildings
+where there were 8, with a rooms-per-building spread rather than 100%
+one-room.
+
+**Interior walls and doors.** A wall on the north or west edge of a square
+wherever two rooms meet (§18's convention, as `deriveWalls` uses for
+exteriors), verified by probe: exactly one wall per boundary, on the correct
+square, in the correct orientation.
+
+**Doors along a SPANNING TREE.** Cut one door per graph edge that first
+connects a new room. A spanning tree reaches every node by definition, so **no
+room can be walled in** — the guarantee is structural rather than
+probabilistic, which matters because an unreachable room is invisible until
+someone walks into the building. Charter §1 names *"room with no exit"* as a
+validation rule; this is the same knowledge applied at authoring time, and A4
+should walk the same graph in the other direction.
+
+**Exterior doors exist and are correct in the data** — verified at 200_201
+(43,69) and (43,84), each carrying `walls_exterior_house_01_1` (wall) plus
+`_11` (door). **They are invisible in a render** because `CellRenderer` draws
+the opaque wall sprite over them. Fourth time this session the renderer has
+been the limitation rather than the map (§31, and the mask transposition, the
+tree canopy, the road width before it).
+
+**`TilePalette` gains interior walls and doors.** `walls_interior_house_01` is
+a clean 16-tile block, same shape as the ground blends: B+0 `WallW`, B+1
+`WallN`, B+2/3 corners, B+8/9 windows, **B+10/11 the doors**, B+12..15
+variants. 436 tiles under `walls_interior` carry a `DoorWall` property.
+
+### The house grammar — owner's rules, tested against Muldraugh
+
+Stated as architecture, not as a distribution, then measured over 400 cells,
+283 houses and 229 exterior doors (`HouseRules`).
+
+| rule | vanilla | verdict |
+|---|---|---|
+| The exterior door never opens into a bedroom | **1 of 229** | **CONFIRMED, a law** |
+| The livingroom faces the road | 62.5% | true but weak |
+| The kitchen is opposite the livingroom | 58.7% | true but weak |
+| Livingroom and kitchen may be open to each other | **55.4% fully open** | **the reverse of my prediction** |
+| Small bedrooms share a bathroom rather than having ensuites | ensuite 6 vs 171 off-core | CONFIRMED |
+
+**The entrance set is wider than livingroom and kitchen.** Of 229 exterior
+doors: livingroom 31.0%, kitchen 26.6%, **hall 17.9%**, **laundry 9.6%**,
+lobby 5.7%, diningroom 2.6%. The hall entrance is the front-door-into-a-hallway
+house and the laundry entrance is the back door into a mudroom; both are common
+enough to include, and both are now in `BuildingPlan.ENTRANCE`.
+
+R1 and R2 are followed anyway despite being weak. A generator that is
+consistent produces more coherent houses than vanilla's 62%, and nobody
+complains that a town is too tidy.
+
+### Room minimums — MEASURED, and this is what the rewrite needs
+
+A median is not a minimum. `RoomMinimums` over 4,065 cells:
+
+| room | p5 area | p5 short side | median area |
+|---|---|---|---|
+| `closet` | 2 | 1 | 2 |
+| `bathroom` | 4 | **2** | 6 |
+| `bedroom` | 9 | **3** | 14 |
+| `kitchen` | 9 | **3** | 21 |
+| `livingroom` | 16 | **4** | 32 |
+| `diningroom` | 15 | 3 | 20 |
+| `garage` | 25 | 5 | 30 |
+
+**A bedroom is 3×3 minimum** — exactly the owner's stated 10ft × 10ft. A
+bathroom is 2 on the short side. A livingroom will not go below 4 wide.
+
+**Smallest house containing each room**, which is when the generator should
+start adding it: livingroom, kitchen, bathroom and bedroom all at **30
+squares** — so a 30 m² house has all four, confirming they are required rather
+than optional. Then `laundry` 47, `closet` 48, `diningroom` 64, `office` 66,
+`garagestorage` 69, `garage` 78.
+
+### The layout algorithm — the aspect fix, which works
+
+Rooms were coming out as strips: kitchen 15×3, closet 2×7, bathroom 2×10, worst
+aspect 7.0. `split` always cut the longer side, which is right for a balanced
+split and wrong for an unbalanced one.
+
+**Trying both axes and keeping the better worst-case aspect** takes it to 4.0,
+and a 12×10 house to 2.0 on every room. One extra arithmetic per split.
+
+Weights also became §34's **measured median areas** rather than ratios to the
+building mean — same ordering, proportions closer to what vanilla builds.
+
+### WHAT IS NOT FINISHED — read this before continuing
+
+**1. The room-list rule is mid-rewrite and wrong.** The owner's rule is:
+
+> livingroom, kitchen, bathroom and at least one bedroom are REQUIRED and have
+> minimum sizes. Further bedrooms are added until the space runs out. Closets,
+> laundry and storage are the LEFTOVER, not peers with targets. If a room falls
+> just short of its minimum, take the slack from a neighbour rather than
+> shipping it undersized.
+
+A prototype of that produced:
+
+```
+  76 sq ->  4 rooms   beds=1 baths=1
+ 122 sq ->  9 rooms   beds=3 baths=3     <- three bathrooms
+ 341 sq -> 13 rooms   beds=4 baths=4     <- same as a 173 sq house, 47% filled
+```
+
+Two defects, both plain: **bathrooms scale with bedrooms** when vanilla has
+about one per house at these sizes, and the list **stops growing past ~173
+squares**, so a 500 m² house gets the same 13 rooms at 32% fill. Do not ship
+this. The measured minimums above are correct; the loop that consumes them is
+not.
+
+**2. `plan` still bands the core across the full frontage.** The aspect fix
+reaches the secondary rooms inside the middle band but not the front and back
+bands themselves. The self-test catches it: `NORTH 30x6 livingroom[0,0 30x2]`,
+aspect **15.0**, and the suite fails on exactly that case. A 30×6 footprint is
+rare and none of our seven are that shape, but the check is red and should stay
+red until the core is placed as a block with a secondary room beside it rather
+than as a strip.
+
+**3. The elastic resize is unimplemented.** "If you need two more feet to make
+the bedrooms 10×10, extend that part of the house" — nothing does this. Rooms
+land wherever the partition puts them.
+
+**4. Multi-storey is unimplemented and out of scope.** The owner's rules for it
+are recorded and not built: half or more of the bedrooms upstairs, one bedroom
+or office down, a bathroom on every floor. Nothing writes at z=1 and stairs do
+not exist.
+
+### Measurement caveats worth carrying
+
+**The core-share numbers are unusable.** `RoomMinimums` reported 82.9% core at
+≤50 squares, then 67.9, 65.7, 41.7, then **93.0% at 221–350** with a bedroom
+median of 0 — non-monotonic and incoherent. Two causes: clustering merges
+terraces and apartment blocks into one "house", and we read ground floor only,
+so a two-storey house shows its livingroom and kitchen and none of its
+bedrooms. **Use the per-room minimums, which are immune to this; ignore the
+core share.**
+
+The owner's "core is 25% of the house" does not need measuring anyway — under
+the minimums rule it falls out. A small house is mostly livingroom and kitchen
+because those hold their size while the bedroom count falls to one.
+
+### OPEN
+
+1. The room-list loop above.
+2. Core placed as a block, not a band.
+3. Elastic resize.
+4. `CellRenderer` cannot show interiors — every wall is drawn at full height
+   with no cutaway, so the rooms are occluded. Teaching it to draw walls at
+   half height would make floor plans legible in a PNG, which matters because
+   we will be looking at a lot of them.
+5. `intDoorN` resolves to `walls_interior_house_01_107` while `intDoorW` is
+   `_10` — the property test sorts alphabetically and `_107` beats `_11`, so a
+   north and west door in the same wall are different styles. Pair doors to
+   their block.
+6. **The in-game test has not been run.** The doors exist in the data; nobody
+   has walked through one.
 

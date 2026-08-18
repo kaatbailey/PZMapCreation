@@ -39,6 +39,10 @@ public final class TilePalette {
     public String floorInterior, floorRoad, floorGrass;
     public String wallNorth, wallWest;
     public String doorWallNorth, doorWallWest;
+
+    /** Partitions between rooms. The exterior sheet reads wrong indoors. */
+    public String interiorWallNorth, interiorWallWest;
+    public String interiorDoorNorth, interiorDoorWest;
     public final List<String> all = new ArrayList<>();
 
     /** Candidates that had the right properties but no sprite. */
@@ -95,8 +99,23 @@ public final class TilePalette {
         p.doorWallWest = p.first(n -> flag(ti, n, "DoorWallW") && !ti.isOverlay(n),
                 "walls_exterior_house_01_", "walls_exterior_", "walls_");
 
+        // Interior partitions and their doors. Same property tests as the
+        // exterior pair, preferring the interior sheet.
+        p.interiorWallNorth = p.first(n -> flag(ti, n, "WallN") && !ti.isOverlay(n)
+                        && !flag(ti, n, "DoorWallN") && !flag(ti, n, "WindowN"),
+                "walls_interior_house_01_", "walls_interior_", "walls_");
+        p.interiorWallWest = p.first(n -> flag(ti, n, "WallW") && !ti.isOverlay(n)
+                        && !flag(ti, n, "DoorWallW") && !flag(ti, n, "WindowW"),
+                "walls_interior_house_01_", "walls_interior_", "walls_");
+        p.interiorDoorNorth = p.first(n -> flag(ti, n, "DoorWallN") && !ti.isOverlay(n),
+                "walls_interior_house_01_", "walls_interior_", "walls_");
+        p.interiorDoorWest = p.first(n -> flag(ti, n, "DoorWallW") && !ti.isOverlay(n),
+                "walls_interior_house_01_", "walls_interior_", "walls_");
+
         for (String s : new String[]{p.floorInterior, p.floorRoad, p.floorGrass,
-                p.wallNorth, p.wallWest, p.doorWallNorth, p.doorWallWest}) {
+                p.wallNorth, p.wallWest, p.doorWallNorth, p.doorWallWest,
+                p.interiorWallNorth, p.interiorWallWest,
+                p.interiorDoorNorth, p.interiorDoorWest}) {
             if (s != null && !p.all.contains(s)) {
                 p.all.add(s);
             }
@@ -163,6 +182,10 @@ public final class TilePalette {
         if (wallWest == null) missing.add("wallWest");
         if (doorWallNorth == null) missing.add("doorWallNorth");
         if (doorWallWest == null) missing.add("doorWallWest");
+        if (interiorWallNorth == null) missing.add("interiorWallNorth");
+        if (interiorWallWest == null) missing.add("interiorWallWest");
+        if (interiorDoorNorth == null) missing.add("interiorDoorNorth");
+        if (interiorDoorWest == null) missing.add("interiorDoorWest");
         if (!missing.isEmpty()) {
             throw new IllegalStateException(
                     "TilePalette: no tile has both the required properties and a sprite for: "
@@ -203,6 +226,10 @@ public final class TilePalette {
                 + "\n   wallW=" + describe(wallWest)
                 + "\n   doorN=" + describe(doorWallNorth)
                 + "\n   doorW=" + describe(doorWallWest)
+                + "\n   intWallN=" + describe(interiorWallNorth)
+                + "\n   intWallW=" + describe(interiorWallWest)
+                + "\n   intDoorN=" + describe(interiorDoorNorth)
+                + "\n   intDoorW=" + describe(interiorDoorWest)
                 + "\n   dropped (properties but no sprite): " + droppedNoSprite;
     }
 }
