@@ -87,7 +87,7 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 | | **E4** Scene rotation pass | — | **RETIRED 2026-08-14.** Premise fails and it was never needed (STATE §30) |
 | `[x]` | **E5** `FootprintSnap` | — | **CLOSED 2026-08-14. Buildings are rectangles** (STATE §31, §32, `docs/e5_buildings.png`) |
 | `[x]` | **E14** Room layout inside a rectangle | — | **CLOSED 2026-08-14. A BSP plus a circulation pass** (STATE §34) |
-| `[~]` | **E13** Interior subdivision | E5, E14 | **IN PROGRESS.** Walls, doors and minimums work; the room-list loop does not (STATE §35) |
+| `[x]` | **E13** Interior subdivision | E5, E14 | **CLOSED 2026-08-19.** Layout engine rewritten, door fix confirmed, in-game walk passed. Houses look correct; barn is open. (STATE §35, §36) |
 | `[ ]` | **E6** Extract `BiomeMapWriter` distance banding | — | Small. Three consumers want a region signal |
 | `[x]` | **E7** Ground precedence and dither generality | E3 | **CLOSED 2026-08-13. Priority table CONFIRMED** over 4,065 cells (STATE §27, `docs/E7_GROUND_PRECEDENCE.md`) |
 | `[x]` | **E8** Region layer and the dither law | E7 | **CLOSED 2026-08-14. The scattered-diamond defect is FIXED** (STATE §28, `docs/e8_final.png`) |
@@ -146,6 +146,16 @@ for exactly what works and what does not. Finishing E13 is the next work:
 
 **E13 (finish) → A2-gate → B1 → B2 → C1**, with E10, E11, E12 and A3-pre1/pre2 available as
 small fillers at any point.
+
+**AMENDED 2026-08-19.** E13 is closed — layout engine rewritten to the owner's
+architectural rule, door fix confirmed in game, barn classification working.
+B3 (room decomposition) and B4 (openings) are largely superseded by E13's
+layout engine and door pass; re-scope or close when B1/B2 resolve. The order
+is now:
+
+**A2-gate → B1 → B2 → C1**, with E10, E11, E12 and A3-pre1/pre2 available as
+small fillers. The A-series leads into the editor (C-track); each chunk builds
+the layer the next sits on.
 
 **E3 first (RESOLVED 2026-08-14 — E3, E7 and E8 are closed and the ground defect is fixed; kept as the record of why this line of work came first.)** Ground appearance was the most immersion-breaking defect on the
 generated map (owner, 2026-08-11), and E3 was an investigation rather than a
@@ -266,6 +276,60 @@ Same class as the `ls`/eza gotcha in STATE §5.
   prints nothing until it finishes. Warn before long runs; it is not hung.
 - **In-game tests need a fresh world**, not a resumed save — spawn and chunk
   data get baked for territory already visited.
+
+### Path reference — where things live
+
+These paths have each cost at least one round trip to rediscover. Put them here
+rather than in STATE so they survive even if STATE is not uploaded.
+
+```
+Project repo:          ~/Documents/PZMapCreation
+Compiled classes:      ~/Documents/PZMapCreation/out
+GIS source data:       ~/pzgis/buildings.geojson, roads.geojson, area.geojson
+Generated mod output:  ~/Zomboid/mods/PZGisImport/common/media/maps/PZGisImport/
+Vanilla PZ install:    ~/.local/share/Steam/steamapps/common/ProjectZomboid/projectzomboid/
+Vanilla maps:          $PZ/media/maps/Muldraugh, KY/
+Decompiled engine:     ~/Downloads/ZOMBOIDSTUFF/decompiled/
+```
+
+### Regeneration command
+
+The entry point is `Probe giscells`, NOT `GisCells` (which has no `main`).
+This has cost two round trips.
+
+```fish
+cd ~/Documents/PZMapCreation
+set PZ ~/.local/share/Steam/steamapps/common/ProjectZomboid/projectzomboid
+set GISMAP ~/Zomboid/mods/PZGisImport/common/media/maps/PZGisImport
+
+java -cp out pzformat.Probe giscells \
+    ~/pzgis/buildings.geojson \
+    ~/pzgis/roads.geojson \
+    ~/pzgis/area.geojson \
+    "$PZ/media" \
+    ~/Zomboid/mods \
+    PZGisImport
+```
+
+### Common probe commands
+
+```fish
+# Room distribution on generated output
+java -cp out pzformat.RoomCluster "$GISMAP" 200_200 200_201 201_200 201_201
+
+# Room wall geometry
+java -cp out pzformat.Probe roomgeom "$PZ/media" "$GISMAP" 200_200
+
+# Inspect a specific square
+java -cp out pzformat.Probe square "$PZ/media" "$GISMAP" 200_200 117 91 0
+
+# Door pre-flight (coordinates change per generation)
+java -cp out pzformat.DoorProbe "$PZ/media" "$GISMAP" 200_201 43 69 43 84
+
+# Vanilla measurement (full Muldraugh)
+set cells (for f in "$MAPS/Muldraugh, KY"/*.lotheader; basename $f .lotheader; end)
+java -cp out pzformat.RoomCluster "$MAPS/Muldraugh, KY" $cells
+```
 
 ---
 
