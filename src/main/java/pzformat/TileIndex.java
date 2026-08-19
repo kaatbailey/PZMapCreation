@@ -104,6 +104,24 @@ public final class TileIndex {
         if (n) return Edge.NORTH;
         if (w) return Edge.WEST;
 
+        // attachedN/attachedW deliberately excluded. Decoration hangs on walls,
+        // so it sits in the same squares, and an earlier version that included
+        // it appeared to validate at 99.5% — a correlated proxy, not a correct
+        // classification (STATE §11). A3 wall-joining calls edgeOf on neighbors;
+        // a grime overlay falsely reporting Edge.NORTH would produce wrong join
+        // variants. Use decorationEdge() when you need the attached side.
+        return Edge.NONE;
+    }
+
+    /**
+     * Which edge decoration (grime, trim, signage) is attached to. Separate
+     * from {@link #edgeOf} because attached tiles are NOT walls and must not
+     * influence wall-joining decisions.
+     */
+    public Edge decorationEdge(String tileName) {
+        TileDefs.Tile t = byName.get(tileName);
+        if (t == null) return Edge.NONE;
+        Map<String, String> p = t.props;
         boolean an = p.containsKey("attachedN"), aw = p.containsKey("attachedW");
         if (an && aw) return Edge.BOTH;
         if (an) return Edge.NORTH;
