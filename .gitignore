@@ -12,3 +12,5 @@ CHUNKS.md.bak
 CHUNKS.md.bak
 *.java.bak
 *.java.bak2
+/pzgis/
+*.geojson
