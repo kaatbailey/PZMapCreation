@@ -67,8 +67,36 @@ public final class GisCells {
             return;
         }
 
+        // ---- BUILDING DIRECTORY ----
+        // Printed once before the cell loop. Every building on one screen with
+        // its classification, so a 332m² Agriculture next to a 127m² Residential
+        // jumps out without ground truth. World coords let you walk straight to
+        // any entry by the number on screen (x: / y: in the bottom-right corner).
+        System.out.println("\nBUILDING DIRECTORY");
+        System.out.printf("  %-4s %-16s %6s  %-10s  %-7s  %-6s  %-16s  %s%n",
+                "#", "OCC_CLS", "area", "rect", "facing", "rooms", "world pos", "notes");
+        for (int di = 0; di < g.buildings.size(); di++) {
+            GisImport.Building db = g.buildings.get(di);
+            FootprintSnap.Rect dr = db.rect();
+            Random drng = new Random(SEED * 131 + di);
+            List<String> dtypes = BuildingPlan.recipe(
+                    dr.area(), db.occ(), db.outbuilding(), drng);
+            BuildingPlan.Facing dfacing = faceTheRoad(g, dr);
+            int worldX = ORIGIN_CELL_X * 256 + dr.x();
+            int worldY = ORIGIN_CELL_Y * 256 + dr.y();
+            String notes = "";
+            if ("Agriculture".equals(db.occ()) && dr.area() < 150)
+                notes = "small for Agriculture?";
+            else if ("Residential".equals(db.occ()) && dr.area() > 280)
+                notes = "large for Residential?";
+            System.out.printf("  %-4d %-16s %4dm²  %-10s  %-7s  %4d    x:%-6d y:%-6d  %s%n",
+                    di, db.occ(), dr.area(), dr.w() + "x" + dr.h(), dfacing,
+                    dtypes.size(), worldX, worldY, notes);
+        }
+        System.out.println();
+
         int cellsX = (g.width + 255) / 256, cellsY = (g.height + 255) / 256;
-        System.out.println("\ngenerating " + cellsX + "x" + cellsY + " cells");
+        System.out.println("generating " + cellsX + "x" + cellsY + " cells");
 
         // Layout copied from a working B42 map mod (Maplewood):
         //   <mod>/42/mod.info          version-specific metadata only
@@ -247,7 +275,7 @@ public final class GisCells {
 
                     carveInterior(cell, pal, planned, idx, brng);
                     carveEntrances(cell, pal, planned, idx, bx, by,
-                            fr.w(), fr.h(), facing);
+                            fr.w(), fr.h(), facing, wnIdx, wwIdx);
 
                     // One building, all its rooms. The format models this and
                     // we were writing one index per entry.
@@ -664,7 +692,7 @@ public final class GisCells {
     static void carveEntrances(CellData cell, TilePalette pal,
                                List<BuildingPlan.Room> planned, List<Integer> idx,
                                int bx, int by, int bw, int bh,
-                               BuildingPlan.Facing facing) {
+                               BuildingPlan.Facing facing, int wnIdx, int wwIdx) {
         if (pal.doorWallNorth == null) return;
         int doorN = cell.tileIndex(pal.doorWallNorth);
         int doorW = cell.tileIndex(pal.doorWallWest);
@@ -696,26 +724,42 @@ public final class GisCells {
             if (!onEdge) continue;
 
             replaceTile(cell, x, y, north ? doorN : doorW, north,
-                    roomIndexOf(idx, i));
+                    roomIndexOf(idx, i), north ? wnIdx : wwIdx);
         }
     }
 
     /**
-     * Swap the wall on this square's north or west edge for a door, keeping
-     * everything else in the stack.
+     * Put a door on this square's north or west edge, REMOVING the plain wall
+     * the raster pass already wrote there.
+     *
+     * The earlier version appended the door beside the wall, on the belief
+     * (STATE §35, never tested in game) that a vanilla door square carries both
+     * a Wall and a DoorWall and the engine draws the door over the wall. That
+     * is false where it counts: two wall objects on one edge leave the plain
+     * wall winning for collision, so the square is solid and merely draws a
+     * door frame. Charter §4 — byte round-tripping proved the tiles were
+     * WRITTEN, not that the engine INTERPRETS them as a door. Removing the
+     * matching wall makes the door the only edge object, which is exactly what
+     * the interior pass already does (`door ? doorN : wallN`).
+     *
+     * wallIdx is the exterior wall tile for this edge (wnIdx for north,
+     * wwIdx for west); there should be exactly one on the square.
      */
     static void replaceTile(CellData cell, int x, int y, int tile, boolean north,
-                            int roomId) {
+                            int roomId, int wallIdx) {
         if (x < 0 || y < 0 || x >= 256 || y >= 256) return;
         int[] cur = cell.tilesAt(x, y, 0);
         if (cur == null) return;
-        // Append rather than filter. The exterior wall is already on this
-        // square from the raster pass, and PZ draws a DoorWall over its wall —
-        // that is how vanilla squares read, carrying both (see any probe of a
-        // vanilla door square).
-        int[] next = new int[cur.length + 1];
-        System.arraycopy(cur, 0, next, 0, cur.length);
-        next[cur.length] = tile;
+
+        int[] tmp = new int[cur.length + 1];
+        int k = 0;
+        boolean removed = false;
+        for (int v : cur) {
+            if (!removed && v == wallIdx) { removed = true; continue; }
+            tmp[k++] = v;
+        }
+        tmp[k++] = tile;
+        int[] next = java.util.Arrays.copyOf(tmp, k);
         cell.setSquare(x, y, 0, next, roomId);
     }
 
