@@ -196,8 +196,12 @@ public final class GisCells {
                                     }
                                 }
                             }
-                            if (g.northWall[gx][gy]) stack.add(wnIdx);
-                            if (g.westWall[gx][gy]) stack.add(wwIdx);
+                            // A3: wall-joining. A corner square gets one
+                            // WallNW tile instead of two overlapping straights.
+                            if (g.northWall[gx][gy] && g.westWall[gx][gy])
+                                stack.add(cell.tileIndex(pal.wallNW));
+                            else if (g.northWall[gx][gy]) stack.add(wnIdx);
+                            else if (g.westWall[gx][gy]) stack.add(wwIdx);
                             if (treeAt[gx][gy] != null) {
                                 stack.add(cell.tileIndex(treeAt[gx][gy]));
                             }

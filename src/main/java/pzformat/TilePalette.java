@@ -40,9 +40,13 @@ public final class TilePalette {
     public String wallNorth, wallWest;
     public String doorWallNorth, doorWallWest;
 
+    /** Corner (WallNW) and pillar (WallSE) — the joined variants. */
+    public String wallNW, wallSE;
+
     /** Partitions between rooms. The exterior sheet reads wrong indoors. */
     public String interiorWallNorth, interiorWallWest;
     public String interiorDoorNorth, interiorDoorWest;
+    public String interiorWallNW, interiorWallSE;
     public final List<String> all = new ArrayList<>();
 
     /** Candidates that had the right properties but no sprite. */
@@ -112,10 +116,22 @@ public final class TilePalette {
         p.interiorDoorWest = p.first(n -> flag(ti, n, "DoorWallW") && !ti.isOverlay(n),
                 "walls_interior_house_01_", "walls_interior_", "walls_");
 
+        // Corner and pillar variants for wall-joining (A3).
+        p.wallNW = p.first(n -> flag(ti, n, "WallNW") && !ti.isOverlay(n),
+                "walls_exterior_house_01_", "walls_exterior_", "walls_");
+        p.wallSE = p.first(n -> flag(ti, n, "WallSE") && !ti.isOverlay(n),
+                "walls_exterior_house_01_", "walls_exterior_", "walls_");
+        p.interiorWallNW = p.first(n -> flag(ti, n, "WallNW") && !ti.isOverlay(n),
+                "walls_interior_house_01_", "walls_interior_", "walls_");
+        p.interiorWallSE = p.first(n -> flag(ti, n, "WallSE") && !ti.isOverlay(n),
+                "walls_interior_house_01_", "walls_interior_", "walls_");
+
         for (String s : new String[]{p.floorInterior, p.floorRoad, p.floorGrass,
                 p.wallNorth, p.wallWest, p.doorWallNorth, p.doorWallWest,
+                p.wallNW, p.wallSE,
                 p.interiorWallNorth, p.interiorWallWest,
-                p.interiorDoorNorth, p.interiorDoorWest}) {
+                p.interiorDoorNorth, p.interiorDoorWest,
+                p.interiorWallNW, p.interiorWallSE}) {
             if (s != null && !p.all.contains(s)) {
                 p.all.add(s);
             }
@@ -132,6 +148,22 @@ public final class TilePalette {
     static String prop(TileIndex ti, String name, String key) {
         TileDefs.Tile t = ti.get(name);
         return t == null ? null : t.props.get(key);
+    }
+
+    /**
+     * Resolve the wall configuration on a square to a single tile index.
+     * Replaces the old pattern of stacking two straight walls on a corner.
+     *
+     * @param north true if this square has a wall on its north edge
+     * @param west  true if this square has a wall on its west edge
+     * @param interior true for interior partition walls
+     * @return the tile name, or null if no wall on this square
+     */
+    public String wallJoin(boolean north, boolean west, boolean interior) {
+        if (north && west)  return interior ? interiorWallNW : wallNW;
+        if (north)          return interior ? interiorWallNorth : wallNorth;
+        if (west)           return interior ? interiorWallWest : wallWest;
+        return null;
     }
 
     /**
@@ -186,6 +218,10 @@ public final class TilePalette {
         if (interiorWallWest == null) missing.add("interiorWallWest");
         if (interiorDoorNorth == null) missing.add("interiorDoorNorth");
         if (interiorDoorWest == null) missing.add("interiorDoorWest");
+        if (wallNW == null) missing.add("wallNW");
+        if (wallSE == null) missing.add("wallSE");
+        if (interiorWallNW == null) missing.add("interiorWallNW");
+        if (interiorWallSE == null) missing.add("interiorWallSE");
         if (!missing.isEmpty()) {
             throw new IllegalStateException(
                     "TilePalette: no tile has both the required properties and a sprite for: "
@@ -230,6 +266,10 @@ public final class TilePalette {
                 + "\n   intWallW=" + describe(interiorWallWest)
                 + "\n   intDoorN=" + describe(interiorDoorNorth)
                 + "\n   intDoorW=" + describe(interiorDoorWest)
+                + "\n   extNW=" + describe(wallNW)
+                + "\n   extSE=" + describe(wallSE)
+                + "\n   intNW=" + describe(interiorWallNW)
+                + "\n   intSE=" + describe(interiorWallSE)
                 + "\n   dropped (properties but no sprite): " + droppedNoSprite;
     }
 }
