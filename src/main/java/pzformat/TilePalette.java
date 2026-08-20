@@ -36,7 +36,7 @@ import java.util.function.Predicate;
  */
 public final class TilePalette {
 
-    public String floorInterior, floorRoad, floorGrass;
+    public String floorInterior, floorRoad, floorGrass, floorWater;
     public String wallNorth, wallWest;
     public String doorWallNorth, doorWallWest;
 
@@ -70,6 +70,15 @@ public final class TilePalette {
                         && !flag(ti, n, "FloorOverlay")
                         && !ti.isOverlay(n),
                 "blends_natural_01_", "blends_grassoverlays_01_", "blends_");
+
+        // Water. blends_natural_02 carries the `water` flag on its solid tiles.
+        // The edge-blend tiles (FloorAttachment*) are separate and handled
+        // the same way road edges are — later, not here.
+        p.floorWater = p.first(n -> flag(ti, n, "water")
+                        && flag(ti, n, "solidfloor")
+                        && !flag(ti, n, "FloorOverlay")
+                        && !ti.isOverlay(n),
+                "blends_natural_02_", "blends_");
 
         // Road surface. Same overlay exclusion; the street sheet has no
         // grass/nature flags to key off.
@@ -126,7 +135,7 @@ public final class TilePalette {
         p.interiorWallSE = p.first(n -> flag(ti, n, "WallSE") && !ti.isOverlay(n),
                 "walls_interior_house_01_", "walls_interior_", "walls_");
 
-        for (String s : new String[]{p.floorInterior, p.floorRoad, p.floorGrass,
+        for (String s : new String[]{p.floorInterior, p.floorRoad, p.floorGrass, p.floorWater,
                 p.wallNorth, p.wallWest, p.doorWallNorth, p.doorWallWest,
                 p.wallNW, p.wallSE,
                 p.interiorWallNorth, p.interiorWallWest,
@@ -148,6 +157,44 @@ public final class TilePalette {
     static String prop(TileIndex ti, String name, String key) {
         TileDefs.Tile t = ti.get(name);
         return t == null ? null : t.props.get(key);
+    }
+
+    /**
+     * A complete exterior wall skin for one building.
+     */
+    public record WallSkin(String wallN, String wallW, String wallNW, String wallSE,
+                           String doorN, String doorW) {
+        public String label() {
+            return wallN.substring(0, wallN.lastIndexOf('_'));
+        }
+    }
+
+    private static final String[][] SKIN_PREFIXES = {
+            {"walls_exterior_house_01_", "walls_exterior_house_"},
+            {"walls_exterior_house_02_", "walls_exterior_house_"},
+            {"walls_exterior_wooden_01_", "walls_exterior_wooden_"},
+            {"walls_exterior_wooden_02_", "walls_exterior_wooden_"},
+            {"walls_exterior_house_low_01_", "walls_exterior_"},
+    };
+
+    public static List<WallSkin> discoverSkins(TileIndex ti, Set<String> sprites) {
+        List<WallSkin> skins = new ArrayList<>();
+        TilePalette tmp = new TilePalette();
+        tmp.sprites = sprites;
+        tmp.ti = ti;
+        for (String[] prefixes : SKIN_PREFIXES) {
+            String wn = tmp.first(n -> flag(ti, n, "WallN") && !ti.isOverlay(n)
+                            && !flag(ti, n, "DoorWallN") && !flag(ti, n, "WindowN"), prefixes);
+            String ww = tmp.first(n -> flag(ti, n, "WallW") && !ti.isOverlay(n)
+                            && !flag(ti, n, "DoorWallW") && !flag(ti, n, "WindowW"), prefixes);
+            String nw = tmp.first(n -> flag(ti, n, "WallNW") && !ti.isOverlay(n), prefixes);
+            String se = tmp.first(n -> flag(ti, n, "WallSE") && !ti.isOverlay(n), prefixes);
+            String dn = tmp.first(n -> flag(ti, n, "DoorWallN") && !ti.isOverlay(n), prefixes);
+            String dw = tmp.first(n -> flag(ti, n, "DoorWallW") && !ti.isOverlay(n), prefixes);
+            if (wn != null && ww != null && nw != null && se != null && dn != null && dw != null)
+                skins.add(new WallSkin(wn, ww, nw, se, dn, dw));
+        }
+        return skins;
     }
 
     /**
@@ -210,6 +257,7 @@ public final class TilePalette {
         if (floorInterior == null) missing.add("floorInterior");
         if (floorRoad == null) missing.add("floorRoad");
         if (floorGrass == null) missing.add("floorGrass");
+        if (floorWater == null) missing.add("floorWater");
         if (wallNorth == null) missing.add("wallNorth");
         if (wallWest == null) missing.add("wallWest");
         if (doorWallNorth == null) missing.add("doorWallNorth");
@@ -258,6 +306,7 @@ public final class TilePalette {
         return "floor=" + describe(floorInterior)
                 + "\n   road=" + describe(floorRoad)
                 + "\n   grass=" + describe(floorGrass)
+                + "\n   water=" + describe(floorWater)
                 + "\n   wallN=" + describe(wallNorth)
                 + "\n   wallW=" + describe(wallWest)
                 + "\n   doorN=" + describe(doorWallNorth)

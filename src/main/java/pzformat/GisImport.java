@@ -35,14 +35,14 @@ import java.util.List;
 public final class GisImport {
 
     /** What occupies a tile. Kept coarse for a first pass. */
-    public enum Cover { NONE, ROAD, BUILDING }
+    public enum Cover { NONE, WATER, ROAD, BUILDING }
 
     public int width, height;
     public Cover[][] cover;
     public boolean[][] northWall, westWall;
     public String[][] occupancy;      // OCC_CLS per building tile, for tile choice later
 
-    public int buildingsPlaced, roadsPlaced, buildingTiles, roadTiles;
+    public int buildingsPlaced, roadsPlaced, buildingTiles, roadTiles, waterPlaced, waterTiles;
     public final Map<String, Integer> byOccupancy = new TreeMap<>();
 
     /**
@@ -142,7 +142,23 @@ public final class GisImport {
         g.westWall = new boolean[g.width][g.height];
         for (Cover[] col : g.cover) Arrays.fill(col, Cover.NONE);
 
-        // Roads first: buildings should win where they overlap.
+        // Water first, then roads, then buildings. Each wins over the previous.
+        Path waterFile = buildingsFile.getParent().resolve("water.geojson");
+        if (Files.exists(waterFile)) {
+            GeoJson water = GeoJson.read(waterFile);
+            System.out.println("water features: " + water.features.size());
+            for (GeoJson.Feature f : water.features) {
+                int hw = waterWidth(f.prop("fcode"));
+                for (List<double[]> ring : f.rings) {
+                    List<int[]> pts = g.project(ring, minLon, maxLat, mPerLon, mPerLat);
+                    for (int i = 0; i + 1 < pts.size(); i++)
+                        g.waterLine(pts.get(i), pts.get(i + 1), hw);
+                }
+                g.waterPlaced++;
+            }
+        }
+
+        // Roads: win over water and grass, lose to buildings.
         for (GeoJson.Feature f : roads.features) {
             int w = roadWidth(f.prop("MTFCC"));
             for (List<double[]> ring : f.rings) {
@@ -207,7 +223,8 @@ public final class GisImport {
 
         System.out.println("\nplaced: " + g.buildingsPlaced + " buildings ("
                 + g.buildingTiles + " tiles), " + g.roadsPlaced + " roads ("
-                + g.roadTiles + " tiles)");
+                + g.roadTiles + " tiles), " + g.waterPlaced + " water ("
+                + g.waterTiles + " tiles)");
         int nw = 0, ww = 0;
         for (int x = 0; x < g.width; x++)
             for (int y = 0; y < g.height; y++) {
@@ -383,6 +400,38 @@ public final class GisImport {
         }
     }
 
+    /** Water half-width in tiles by NHD FCode. */
+    static int waterWidth(String fcode) {
+        if (fcode == null) return 2;
+        return switch (fcode) {
+            case "46006", "46003" -> 2;    // stream/river, perennial or intermittent
+            case "46000" -> 3;             // stream/river, unspecified
+            case "55800" -> 4;             // artificial path (large channel)
+            case "33600", "33601", "33603" -> 2;  // canal/ditch
+            default -> 2;
+        };
+    }
+
+    /** Like thickLine but for water. Water loses to roads and buildings. */
+    void waterLine(int[] a, int[] b, int halfWidth) {
+        int steps = Math.max(Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+        if (steps == 0) steps = 1;
+        for (int i = 0; i <= steps; i++) {
+            int cx = a[0] + (b[0] - a[0]) * i / steps;
+            int cy = a[1] + (b[1] - a[1]) * i / steps;
+            for (int dx = -halfWidth; dx <= halfWidth; dx++)
+                for (int dy = -halfWidth; dy <= halfWidth; dy++) {
+                    if (dx * dx + dy * dy > halfWidth * halfWidth) continue;
+                    int x = cx + dx, y = cy + dy;
+                    if (!inBounds(x, y)) continue;
+                    // Water loses to roads and buildings
+                    if (cover[x][y] == Cover.ROAD || cover[x][y] == Cover.BUILDING) continue;
+                    if (cover[x][y] != Cover.WATER) waterTiles++;
+                    cover[x][y] = Cover.WATER;
+                }
+        }
+    }
+
     /**
      * Walls from the rasterised footprint boundary, using the edge convention
      * confirmed against vanilla rooms: a wall lives on the north or west edge
@@ -417,9 +466,11 @@ public final class GisImport {
         Color road = new Color(70, 70, 76);
         Color bldg = new Color(150, 120, 90);
         Color wall = new Color(240, 235, 220);
+        Color water = new Color(60, 90, 140);
         for (int x = 0; x < width; x++)
             for (int y = 0; y < height; y++) {
                 Color c = switch (cover[x][y]) {
+                    case WATER -> water;
                     case ROAD -> road;
                     case BUILDING -> bldg;
                     default -> null;

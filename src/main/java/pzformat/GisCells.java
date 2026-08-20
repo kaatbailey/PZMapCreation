@@ -54,6 +54,10 @@ public final class GisCells {
         TilePalette pal = TilePalette.pick(ti, sprites);
         pal.verify();
         System.out.println("tile palette:\n   " + pal);
+        List<TilePalette.WallSkin> skins = TilePalette.discoverSkins(ti, sprites);
+        System.out.println("exterior wall skins: " + skins.size() + " available");
+        for (int si = 0; si < skins.size(); si++)
+            System.out.println("   [" + si + "] " + skins.get(si).label());
 
         GroundPalette ground = GroundPalette.pick(ti, sprites);
         System.out.println("ground palette: " + ground);
@@ -125,6 +129,29 @@ public final class GisCells {
                 int wnIdx = cell.tileIndex(pal.wallNorth);
                 int wwIdx = cell.tileIndex(pal.wallWest);
 
+                // Per-building skin grid: [x][y] -> {wallN, wallW, wallNW} indices.
+                // Filled from building footprints so the raster loop knows which
+                // skin each wall tile belongs to.
+                int[][][] skinGrid = new int[256][256][];
+                for (int bi = 0; bi < g.buildings.size(); bi++) {
+                    if (skins.isEmpty()) break;
+                    GisImport.Building bld = g.buildings.get(bi);
+                    FootprintSnap.Rect bfr = bld.rect();
+                    int sbx = bfr.x() - ox, sby = bfr.y() - oy;
+                    TilePalette.WallSkin sk = skins.get(
+                            (int) (Math.abs((long) SEED * 131 + bi) % skins.size()));
+                    int skN = cell.tileIndex(sk.wallN());
+                    int skW = cell.tileIndex(sk.wallW());
+                    int skNW = cell.tileIndex(sk.wallNW());
+                    for (int sx = Math.max(0, sbx - 1); sx < Math.min(256, sbx + bfr.w() + 1); sx++)
+                        for (int sy = Math.max(0, sby - 1); sy < Math.min(256, sby + bfr.h() + 1); sy++) {
+                            int gsx = ox + sx, gsy = oy + sy;
+                            if (gsx >= 0 && gsy >= 0 && gsx < g.width && gsy < g.height
+                                    && (g.northWall[gsx][gsy] || g.westWall[gsx][gsy]))
+                                skinGrid[sx][sy] = new int[]{skN, skW, skNW};
+                        }
+                }
+
                 // Seeded per cell so a cell regenerates identically whether or
                 // not its neighbours are also being written.
                 Random rng = new Random(SEED * 31 + (long) cx * 7919 + cy);
@@ -163,6 +190,9 @@ public final class GisCells {
                             edgeFilled++;
                         } else {
                             switch (g.cover[gx][gy]) {
+                                case WATER -> {
+                                    stack.add(cell.tileIndex(pal.floorWater));
+                                }
                                 case BUILDING -> stack.add(intIdx);
                                 case ROAD -> {
                                     stack.add(roadIdx);
@@ -196,12 +226,14 @@ public final class GisCells {
                                     }
                                 }
                             }
-                            // A3: wall-joining. A corner square gets one
-                            // WallNW tile instead of two overlapping straights.
+                            // A3 + skins: wall-joining with per-building skin.
+                            int[] sk = skinGrid[x][y];
                             if (g.northWall[gx][gy] && g.westWall[gx][gy])
-                                stack.add(cell.tileIndex(pal.wallNW));
-                            else if (g.northWall[gx][gy]) stack.add(wnIdx);
-                            else if (g.westWall[gx][gy]) stack.add(wwIdx);
+                                stack.add(sk != null ? sk[2] : cell.tileIndex(pal.wallNW));
+                            else if (g.northWall[gx][gy])
+                                stack.add(sk != null ? sk[0] : wnIdx);
+                            else if (g.westWall[gx][gy])
+                                stack.add(sk != null ? sk[1] : wwIdx);
                             if (treeAt[gx][gy] != null) {
                                 stack.add(cell.tileIndex(treeAt[gx][gy]));
                             }
@@ -278,8 +310,13 @@ public final class GisCells {
                     }
 
                     carveInterior(cell, pal, planned, idx, brng);
+                    TilePalette.WallSkin ceSkin = skins.isEmpty() ? null
+                            : skins.get((int) (Math.abs((long) SEED * 131 + bi) % skins.size()));
                     carveEntrances(cell, pal, planned, idx, bx, by,
-                            fr.w(), fr.h(), facing, wnIdx, wwIdx);
+                            fr.w(), fr.h(), facing,
+                            ceSkin != null ? cell.tileIndex(ceSkin.wallN()) : wnIdx,
+                            ceSkin != null ? cell.tileIndex(ceSkin.wallW()) : wwIdx,
+                            ceSkin);
 
                     // One building, all its rooms. The format models this and
                     // we were writing one index per entry.
@@ -696,10 +733,11 @@ public final class GisCells {
     static void carveEntrances(CellData cell, TilePalette pal,
                                List<BuildingPlan.Room> planned, List<Integer> idx,
                                int bx, int by, int bw, int bh,
-                               BuildingPlan.Facing facing, int wnIdx, int wwIdx) {
+                               BuildingPlan.Facing facing, int wnIdx, int wwIdx,
+                               TilePalette.WallSkin skin) {
         if (pal.doorWallNorth == null) return;
-        int doorN = cell.tileIndex(pal.doorWallNorth);
-        int doorW = cell.tileIndex(pal.doorWallWest);
+        int doorN = cell.tileIndex(skin != null ? skin.doorN() : pal.doorWallNorth);
+        int doorW = cell.tileIndex(skin != null ? skin.doorW() : pal.doorWallWest);
 
         for (int i = 0; i < planned.size(); i++) {
             BuildingPlan.Room r = planned.get(i);
