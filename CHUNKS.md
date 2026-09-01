@@ -63,7 +63,7 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 
 | | Chunk | Depends on | Deliverable |
 |---|---|---|---|
-| `[ ]` | **C1** Architecture decision gate | — | **A written decision.** |
+| `[x]` | **C1** Architecture decision gate | — | **A written decision.** |
 | `[!]` | **C2** Working store and project format | C1 | Blocked |
 | `[!]` | **C3** Interactive viewport | C1, C2 | Blocked |
 | `[!]` | **C4** Tool layer: brushes, selection, undo UI | C3, A3 | Blocked |

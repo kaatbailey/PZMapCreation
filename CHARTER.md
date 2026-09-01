@@ -63,7 +63,8 @@ when they teach something the editor needs, or when they are nearly free.
   install directory. Format reverse-engineering is well tolerated in this
   community; shipping TIS's assets is not.
 - **No dependencies in the library layer.** Java 21. The application layer may
-  take dependencies; the library may not.
+  take dependencies; the library may not.  Exception:
+  C++20, no dependencies in the library layer beyond the standard library; the application layer may take permissively-licensed or LGPL dependencies"
 - **No web service, no accounts, no telemetry.**
 
 ---
@@ -119,3 +120,4 @@ goal away.
 | Date | Change |
 |---|---|
 | 2026-08-08 | Charter created. Editor goal restored as primary after drift; GIS scoped as side project. Multi-user editing ruled out. |
+| 2026-08-21 |  Some dependencies allowed as long as they are not pay dependencies.
