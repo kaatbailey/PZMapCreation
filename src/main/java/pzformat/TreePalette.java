@@ -1,6 +1,7 @@
 package pzformat;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -48,7 +49,35 @@ public final class TreePalette {
     public static TreePalette pick(TileIndex ti, Set<String> sprites) {
         TreePalette p = new TreePalette();
 
-        for (String n : ti.byName.keySet()) {
+        // SORTED, NOT RAW. `TileIndex.byName` is a HashMap, so its iteration
+        // order is a function of String.hashCode, table capacity and insertion
+        // history. It is stable for a given JDK and input set — which is why
+        // the generator measures DETERMINISTIC — but it is not a specification,
+        // and it is the order that decides `bySize`'s list order, which decides
+        // which tile TreeScatter puts on each of ~7,700 squares.
+        //
+        // STATE §41 proved this hazard dormant because nothing consumed raw
+        // byName order. The A2-gate resolving on 2026-09-02 made TreeScatter
+        // live and this call site with it.
+        //
+        // Reproducing HashMap order in C++ would mean cloning Java's bucket
+        // layout and resize behaviour to buy byte-identity with an ARBITRARY
+        // ordering that nothing depends on and that a JDK upgrade could change
+        // under both trees at once. Sorting removes the dependency instead.
+        // TilePalette.first already does exactly this (Collections.sort before
+        // taking hits.get(0)), so this matches existing practice rather than
+        // inventing a convention.
+        //
+        // Tile names are ASCII, so Java's String.compareTo (UTF-16 code units)
+        // and C++'s std::string operator< (unsigned byte compare) agree. The
+        // oracle asserts that rather than assuming it.
+        //
+        // THIS CHANGES GENERATED MOD OUTPUT. The pre-2026-09-02 baseline is
+        // superseded; regenerate before comparing anything.
+        List<String> names = new ArrayList<>(ti.byName.keySet());
+        Collections.sort(names);
+
+        for (String n : names) {
             TileDefs.Tile t = ti.get(n);
             if (t == null || !SHEET.equals(t.tileset)) {
                 continue;
