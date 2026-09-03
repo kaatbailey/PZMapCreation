@@ -134,6 +134,11 @@ public final class TreePalette {
         return !bySize.isEmpty();
     }
 
+    /** Size classes present, ascending. TreeMap order. For the oracle. */
+    public Set<Integer> bySizeKeys() {
+        return bySize.keySet();
+    }
+
     @Override public String toString() {
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<Integer, List<String>> e : bySize.entrySet()) {
