@@ -17,3 +17,15 @@ CHUNKS.md.bak
 CHARTER.md
 CHARTER.md
 CHUNKS.md
+.idea/awsToolkit.xml
+.idea/.name
+.idea/compiler.xml
+.idea/gradle.xml
+.idea/misc.xml
+.idea/vcs.xml
+gradle/wrapper/gradle-wrapper.jar
+gradle/wrapper/gradle-wrapper.properties
+gradlew
+gradlew.bat
+web/generated/vanilla-world.json
+web/generated/vanilla-world.png

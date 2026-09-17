@@ -81,6 +81,11 @@ public final class Probe {
             case "tiles"     -> TileDefs.run(Path.of(args[1]),
                                     args.length > 2 ? Path.of(args[2]) : null);
             case "mapdir"    -> mapdir(Path.of(args[1]));
+            case "worldmap" -> WorldMapExporter.run(
+                    Path.of(args[1]),
+                    Path.of(args[2]),
+                    Path.of(args[3])
+            );
             default          -> { usage(); System.exit(2); }
         }
     }
@@ -119,7 +124,8 @@ public final class Probe {
               testmodat <mapdir> <mediadir> <modsdir> <name> <worldX> <worldY> [size]
                                                         edit at a world coordinate
               mapdir    <media/maps/MapName>            summarise a whole map folder
-
+              worldmap <mapDir> <texturePackDir> <outputDir>  create coordinate-aware vanilla world overview
+                
             Typical starting point:
               java -cp out pzformat.Probe mapdir ~/.steam/steam/steamapps/common/ProjectZomboid/media/maps/Muldraugh,\\ KY
             """);
