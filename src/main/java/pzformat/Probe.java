@@ -29,7 +29,9 @@ public final class Probe {
             case "giscells"  -> GisCells.run(Path.of(args[1]), Path.of(args[2]),
                                     Path.of(args[3]), Path.of(args[4]), Path.of(args[5]),
                                     args.length > 6 ? args[6] : "PZGisImport",
-                                    args.length > 7 ? Integer.parseInt(args[7]) : 2048);
+                                    args.length > 7 ? Integer.parseInt(args[7]) : 2048,
+                                    args.length > 8 ? Integer.parseInt(args[8]) : GisCells.DEFAULT_ORIGIN_X,
+                                    args.length > 9 ? Integer.parseInt(args[9]) : GisCells.DEFAULT_ORIGIN_Y);
             case "gisimport" -> GisImport.run(Path.of(args[1]), Path.of(args[2]),
                                     args.length > 4 ? Path.of(args[3]) : null,
                                     Path.of(args.length > 4 ? args[4] : args[3]),

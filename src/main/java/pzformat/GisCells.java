@@ -36,14 +36,18 @@ import java.util.Set;
 public final class GisCells {
 
     /** Where to place generated cells so they cannot collide with vanilla. */
-    public static final int ORIGIN_CELL_X = 200, ORIGIN_CELL_Y = 200;
+    // originCellX / originCellY are now parameters to run().
+    // Keep these as the documented defaults so call sites without
+    // placement args continue to work.
+    public static final int DEFAULT_ORIGIN_X = 200, DEFAULT_ORIGIN_Y = 200;
 
     /** Fixed so regeneration is reproducible and render diffs mean something. */
     public static final long SEED = 20260806L;
 
     public static void run(Path buildingsFile, Path roadsFile, Path areaFile,
                            Path mediaDir, Path modsDir, String modName,
-                           int maxTiles) throws Exception {
+                           int maxTiles,
+                           int originCellX, int originCellY) throws Exception {
 
         GisImport g = GisImport.rasterise(buildingsFile, roadsFile, areaFile, maxTiles);
         System.out.println();
@@ -86,8 +90,8 @@ public final class GisCells {
             List<String> dtypes = BuildingPlan.recipe(
                     dr.area(), db.occ(), db.outbuilding(), drng);
             BuildingPlan.Facing dfacing = faceTheRoad(g, dr);
-            int worldX = ORIGIN_CELL_X * 256 + dr.x();
-            int worldY = ORIGIN_CELL_Y * 256 + dr.y();
+            int worldX = originCellX * 256 + dr.x();
+            int worldY = originCellY * 256 + dr.y();
             String notes = "";
             if ("Agriculture".equals(db.occ()) && dr.area() < 150)
                 notes = "small for Agriculture?";
@@ -330,7 +334,7 @@ public final class GisCells {
                 }
 
                 if (roadSpawn != null && spawns.size() < 8) {
-                    spawns.add(new int[]{ORIGIN_CELL_X + cx, ORIGIN_CELL_Y + cy,
+                    spawns.add(new int[]{originCellX + cx, originCellY + cy,
                             roadSpawn[0], roadSpawn[1]});
                 }
 
@@ -339,7 +343,7 @@ public final class GisCells {
                 totalEdgeFill += edgeFilled;
                 totalTufts += tufts;
 
-                String cellName = (ORIGIN_CELL_X + cx) + "_" + (ORIGIN_CELL_Y + cy);
+                String cellName = (originCellX + cx) + "_" + (originCellY + cy);
                 writeChunkDensity(h, rects);
 
                 Files.write(mapDir.resolve(cellName + ".lotheader"), h.write());
@@ -367,13 +371,13 @@ public final class GisCells {
                 totalTufts, totalSquares == 0 ? 0.0 : 100.0 * totalTufts / totalSquares);
 
         writeModInfo(modsDir.resolve(modName), modName);
-        writeSupportFiles(mapDir, modName, spawns);
-        writeWorldGenOverride(mapDir, cellsX, cellsY);
-        BiomeMapWriter.write(g, mapDir, cellsX, cellsY, ORIGIN_CELL_X, ORIGIN_CELL_Y);
+        writeSupportFiles(mapDir, modName, spawns, originCellX, originCellY);
+        writeWorldGenOverride(mapDir, cellsX, cellsY, originCellX, originCellY);
+        BiomeMapWriter.write(g, mapDir, cellsX, cellsY, originCellX, originCellY);
 
         System.out.println("\nmod written to " + modsDir.resolve(modName));
-        System.out.println("cells occupy " + ORIGIN_CELL_X + "_" + ORIGIN_CELL_Y
-                + " to " + (ORIGIN_CELL_X + cellsX - 1) + "_" + (ORIGIN_CELL_Y + cellsY - 1)
+        System.out.println("cells occupy " + originCellX + "_" + originCellY
+                + " to " + (originCellX + cellsX - 1) + "_" + (originCellY + cellsY - 1)
                 + ", well clear of vanilla Knox County");
         if (!spawns.isEmpty()) {
             int[] s = spawns.get(0);
@@ -453,7 +457,8 @@ public final class GisCells {
         return out;
     }
 
-    static void writeSupportFiles(Path mapDir, String modName, List<int[]> spawns)
+    static void writeSupportFiles(Path mapDir, String modName, List<int[]> spawns,
+            int originCellX, int originCellY)
             throws Exception {
         Files.writeString(mapDir.resolve("map.info"),
                 "title=" + modName + "\n"
@@ -465,7 +470,7 @@ public final class GisCells {
         // a multiplayer server config, not a single-player registration hook.
 
         if (spawns.isEmpty()) {
-            spawns.add(new int[]{ORIGIN_CELL_X, ORIGIN_CELL_Y, 128, 128});
+            spawns.add(new int[]{originCellX, originCellY, 128, 128});
         }
 
         StringBuilder sb = new StringBuilder("function SpawnPoints()\n    return {\n");
@@ -513,8 +518,9 @@ public final class GisCells {
      * texture half of the seam; the biome half would need either a matching
      * biome at the edge or nested modules stepping outward.
      */
-    static void writeWorldGenOverride(Path mapDir, int cellsX, int cellsY) throws Exception {
-        int xmin = ORIGIN_CELL_X * 256, ymin = ORIGIN_CELL_Y * 256;
+    static void writeWorldGenOverride(Path mapDir, int cellsX, int cellsY,
+            int originCellX, int originCellY) throws Exception {
+        int xmin = originCellX * 256, ymin = originCellY * 256;
         int xmax = xmin + cellsX * 256 - 1, ymax = ymin + cellsY * 256 - 1;
         String lua = "worldgen[\"static_modules\"] = {\n"
                 + "    {\n"
