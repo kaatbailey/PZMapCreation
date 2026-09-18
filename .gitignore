@@ -31,5 +31,4 @@ gradlew.bat
 *.webp
 *.png
 /pzmap2dzi
-/map-output/html/pzmap/algorithm
-/map-output/html/pzmap/i18n
+
