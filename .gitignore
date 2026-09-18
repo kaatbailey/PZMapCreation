@@ -17,3 +17,14 @@ CHUNKS.md.bak
 CHARTER.md
 CHARTER.md
 CHUNKS.md
+.idea/.name
+.idea/awsToolkit.xml
+.idea/gradle.xml
+.idea/compiler.xml
+.idea/misc.xml
+.idea/vcs.xml
+.idea/workspace.xml
+gradle/wrapper/gradle-wrapper.jar
+gradle/wrapper/gradle-wrapper.properties
+gradlew
+gradlew.bat
