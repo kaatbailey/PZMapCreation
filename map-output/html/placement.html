@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GIS Map Placement</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    background: #1a1a1a;
+    color: #eee;
+    font-family: monospace;
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+#toolbar {
+    background: #222;
+    border-bottom: 1px solid #444;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+#toolbar h1 {
+    font-size: 14px;
+    color: #aaa;
+    white-space: nowrap;
+}
+
+#coords {
+    font-size: 13px;
+    color: #4fc;
+    min-width: 200px;
+}
+
+#opacity-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #aaa;
+}
+
+#opacity { width: 80px; }
+
+#btn-apply {
+    background: #2a6;
+    color: #fff;
+    border: none;
+    padding: 7px 18px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: monospace;
+    font-weight: bold;
+}
+#btn-apply:hover { background: #3b7; }
+
+#btn-toggle {
+    background: #446;
+    color: #fff;
+    border: none;
+    padding: 7px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: monospace;
+}
+#btn-toggle:hover { background: #557; }
+
+#hint {
+    font-size: 11px;
+    color: #666;
+}
+
+#map-wrap {
+    position: relative;
+    flex: 1;
+    overflow: hidden;
+}
+
+#vanilla-viewer {
+    position: absolute;
+    inset: 0;
+}
+
+/* The GIS overlay sits on top, pointer-events controlled by drag state */
+#gis-overlay {
+    position: absolute;
+    border: 2px solid rgba(255, 200, 0, 0.8);
+    cursor: grab;
+    overflow: hidden;
+    /* will be positioned and sized by JS */
+}
+#gis-overlay.dragging { cursor: grabbing; }
+
+#gis-viewer {
+    position: absolute;
+    pointer-events: none;  /* pass all events to parent overlay div */
+}
+
+#result-panel {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.75);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+}
+#result-panel.visible { display: flex; }
+
+#result-box {
+    background: #222;
+    border: 1px solid #4fc;
+    border-radius: 8px;
+    padding: 24px;
+    max-width: 700px;
+    width: 90%;
+}
+#result-box h2 { color: #4fc; margin-bottom: 12px; font-size: 15px; }
+#result-box p { color: #aaa; font-size: 12px; margin-bottom: 8px; }
+#cmd-display {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 12px;
+    font-size: 12px;
+    color: #ff9;
+    word-break: break-all;
+    margin-bottom: 12px;
+    white-space: pre-wrap;
+}
+#result-buttons { display: flex; gap: 10px; }
+#btn-copy {
+    background: #446;
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+}
+#btn-copy:hover { background: #557; }
+#btn-close {
+    background: #333;
+    color: #ccc;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+}
+#btn-close:hover { background: #444; }
+
+#loading {
+    position: fixed;
+    inset: 0;
+    background: #1a1a1a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    z-index: 200;
+    font-size: 14px;
+    color: #aaa;
+}
+#loading-bar-wrap {
+    width: 300px;
+    height: 4px;
+    background: #333;
+    border-radius: 2px;
+}
+#loading-bar {
+    height: 4px;
+    background: #4fc;
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.3s;
+}
+</style>
+</head>
+<body>
+
+<div id="loading">
+    <div>Loading GIS Placement Tool...</div>
+    <div id="loading-bar-wrap"><div id="loading-bar"></div></div>
+    <div id="loading-status">Initialising</div>
+</div>
+
+<div id="toolbar">
+    <h1>🗺 GIS Placement</h1>
+    <div id="coords">Cell: —, — &nbsp;|&nbsp; Tile: —, —</div>
+    <div id="opacity-wrap">
+        <label for="opacity">Overlay:</label>
+        <input type="range" id="opacity" min="10" max="100" value="70">
+        <span id="opacity-val">70%</span>
+    </div>
+    <button id="btn-toggle">Hide GIS</button>
+    <button id="btn-apply">✓ Apply — Get Coordinates</button>
+    <span id="hint">Drag the yellow overlay to align GIS roads with vanilla roads</span>
+</div>
+
+<div id="map-wrap">
+    <div id="vanilla-viewer"></div>
+    <div id="gis-overlay">
+        <div id="gis-viewer"></div>
+    </div>
+</div>
+
+<div id="result-panel">
+    <div id="result-box">
+        <h2>✓ Placement Applied</h2>
+        <p>GIS map top-left corner is at:</p>
+        <div id="result-coords" style="font-size:14px;color:#4fc;margin-bottom:12px;"></div>
+        <p>Java generation command:</p>
+        <div id="cmd-display"></div>
+        <div id="result-buttons">
+            <button id="btn-copy">Copy Command</button>
+            <button id="btn-close">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- Load pzmap2dzi's patched OpenSeadragon -->
+<script src="openseadragon/openseadragon.js"></script>
+
+<script>
+// ---------------------------------------------------------------------------
+// Configuration — edit these if your paths or GIS map size change
+// ---------------------------------------------------------------------------
+const CONFIG = {
+    // Vanilla map DZI
+    vanillaDzi: 'map_data/base_top/layer0.dzi',
+    vanillaInfo: 'map_data/base_top/map_info.json',
+
+    // GIS mod DZI — rendered by pzmap2dzi as a mod map
+    // After running: python main.py render base_top for PZGisImport mod
+    gisDzi: 'map_data/mod_maps/PZGisImport/base_top/layer0.dzi',
+    gisInfo: 'map_data/mod_maps/PZGisImport/base_top/map_info.json',
+
+    // Java command template — fill in your actual paths
+    javaCmd: [
+        'cd ~/Documents/PZMapCreation',
+        'java -cp out pzformat.Probe giscells \\',
+        '    ~/pzgis/buildings.geojson \\',
+        '    ~/pzgis/roads.geojson \\',
+        '    ~/pzgis/area.geojson \\',
+        '    "$PZ/media" \\',
+        '    ~/Zomboid/mods \\',
+        '    PZGisImport 2048 {cellX} {cellY}'
+    ].join('\n'),
+};
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let vanillaInfo = null;
+let gisInfo = null;
+let vanillaViewer = null;
+
+// GIS overlay position in VANILLA IMAGE PIXELS (top-left of GIS map)
+let gisPixelX = 0;
+let gisPixelY = 0;
+
+// GIS map size in pixels (same as tile count since sqr=1)
+let gisPxW = 512;
+let gisPxH = 512;
+let gisImgOffsetX = 0;  // pixel offset within GIS DZI where content starts
+let gisImgOffsetY = 0;
+
+let overlayVisible = true;
+let isDragging = false;
+let dragStartMouseX = 0, dragStartMouseY = 0;
+let dragStartGisX = 0, dragStartGisY = 0;
+
+// ---------------------------------------------------------------------------
+// Loading
+// ---------------------------------------------------------------------------
+function setLoading(pct, msg) {
+    document.getElementById('loading-bar').style.width = pct + '%';
+    document.getElementById('loading-status').textContent = msg;
+}
+
+async function loadJSON(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('Failed to load ' + url + ' (' + r.status + ')');
+    return r.json();
+}
+
+async function init() {
+    setLoading(10, 'Loading map info...');
+
+    // Load vanilla map info
+    vanillaInfo = await loadJSON(CONFIG.vanillaInfo);
+
+    setLoading(30, 'Loading GIS mod info...');
+
+    // Try to load GIS mod info — may not exist yet if not rendered
+    try {
+        gisInfo = await loadJSON(CONFIG.gisInfo);
+        // GIS map pixel size — cell count * 256 * sqr
+        const cellRects = gisInfo.cell_rects;
+        // Find bounding box of cell_rects
+        let minCX = Infinity, minCY = Infinity, maxCX = -Infinity, maxCY = -Infinity;
+        for (const [x, y, w, h] of cellRects) {
+            minCX = Math.min(minCX, x); minCY = Math.min(minCY, y);
+            maxCX = Math.max(maxCX, x + w); maxCY = Math.max(maxCY, y + h);
+        }
+        gisPxW = (maxCX - minCX) * gisInfo.cell_size * gisInfo.sqr;
+        gisPxH = (maxCY - minCY) * gisInfo.cell_size * gisInfo.sqr;
+        // x0/y0 are the world-tile coordinates of image pixel (0,0).
+        // Content starts at image pixel: (minCX*cell_size + x0_offset, minCY*cell_size + y0_offset)
+        // where x0_offset = -(-x0) because world_tile = img_pixel + x0 (x0 is negative).
+        // We store the image-pixel offset so we can crop the DZI correctly.
+        gisImgOffsetX = minCX * gisInfo.cell_size + gisInfo.x0;
+        gisImgOffsetY = minCY * gisInfo.cell_size + gisInfo.y0;
+    } catch(e) {
+        // GIS mod not rendered yet — show size from cell count
+        // Default: 2x2 cells
+        gisInfo = null;
+        gisPxW = 2 * 256;
+        gisPxH = 2 * 256;
+        console.warn('GIS mod DZI not found — using placeholder size. Render the mod first.');
+    }
+
+    setLoading(50, 'Starting vanilla map viewer...');
+
+    // Start vanilla viewer in the background div
+    vanillaViewer = OpenSeadragon({
+        id: 'vanilla-viewer',
+        prefixUrl: 'openseadragon/images/',
+        tileSources: CONFIG.vanillaDzi,
+        showNavigationControl: false,
+        animationTime: 0.3,
+        minZoomLevel: 0.01,
+        maxZoomLevel: 32,
+        defaultZoomLevel: 0,
+        visibilityRatio: 0.1,
+        constrainDuringPan: false,
+        immediateRender: false,
+    });
+
+    vanillaViewer.addHandler('open', () => {
+        setLoading(80, 'Setting up overlay...');
+        setupOverlay();
+        setLoading(100, 'Ready');
+        setTimeout(() => {
+            document.getElementById('loading').style.display = 'none';
+        }, 300);
+    });
+
+    vanillaViewer.addHandler('animation', updateOverlayPosition);
+    vanillaViewer.addHandler('update-viewport', updateOverlayPosition);
+    vanillaViewer.addHandler('resize', updateOverlayPosition);
+}
+
+// ---------------------------------------------------------------------------
+// Overlay setup
+// ---------------------------------------------------------------------------
+function setupOverlay() {
+    const overlay = document.getElementById('gis-overlay');
+    const gisDiv = document.getElementById('gis-viewer');
+
+    // If GIS DZI exists, load it inside the overlay div
+    if (gisInfo) {
+        const gisOsd = OpenSeadragon({
+            element: gisDiv,
+            prefixUrl: 'openseadragon/images/',
+            tileSources: CONFIG.gisDzi,
+            showNavigationControl: false,
+            showNavigator: false,
+            animationTime: 0,
+            immediateRender: true,
+            // Disable ALL interaction — this viewer is display-only
+            mouseNavEnabled: false,
+            gestureSettingsMouse: {
+                scrollToZoom: false, clickToZoom: false,
+                dblClickToZoom: false, pinchToZoom: false,
+                flickEnabled: false, dragToPan: false
+            },
+            gestureSettingsTouch: {
+                scrollToZoom: false, clickToZoom: false,
+                dblClickToZoom: false, pinchToZoom: false,
+                flickEnabled: false, dragToPan: false
+            },
+        });
+
+        // When vanilla viewer zooms/pans, sync the GIS viewer zoom to match
+        vanillaViewer.addHandler('animation', () => syncGisZoom(gisOsd));
+        vanillaViewer.addHandler('update-viewport', () => syncGisZoom(gisOsd));
+        gisOsd.addHandler('open', () => syncGisZoom(gisOsd));
+        window._gisOsd = gisOsd;
+    } else {
+        // No render yet — show a placeholder with a grid
+        gisDiv.style.cssText = 'position:absolute;inset:0;background:rgba(60,120,255,0.3);';
+        gisDiv.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;text-align:center;padding:8px;">GIS map not rendered yet.<br>See instructions.</div>';
+    }
+
+    // Start GIS overlay at centre of vanilla map
+    const vCanvas = document.getElementById('vanilla-viewer');
+    const vRect = vCanvas.getBoundingClientRect();
+    // Place at a sensible starting position in vanilla image pixels
+    // Muldraugh is roughly in the middle of the vanilla world
+    // cell_rects cover x=0..77, y=0..63, so centre is around cell 38,31
+    // = pixel 38*256, 31*256
+    gisPixelX = 38 * 256;
+    gisPixelY = 31 * 256;
+
+    updateOverlayPosition();
+    setupDrag();
+    setupControls();
+}
+
+function syncGisZoom(gisOsd) {
+    if (!gisOsd.isOpen()) return;
+    // The GIS viewer should show its content at the same pixel scale as vanilla
+    // Since both are sqr=1, 1 image pixel = 1 PZ tile in both
+    const zoom = vanillaViewer.viewport.getZoom(true);
+    const containerSize = gisOsd.viewport.getContainerSize();
+    // The GIS image is gisPxW x gisPxH pixels
+    // At the current vanilla zoom level, 1 vanilla image pixel = zoom * containerPixelsPerImagePixel
+    // We want the GIS image to fill its container at the same scale
+    // gisOsd fills the overlay div, which is sized to gisPxW*scale x gisPxH*scale
+    // So gisOsd should just fit its image to fill the container
+    try {
+        // Pan/zoom the GIS viewer to show only the content region within the DZI
+        // The GIS DZI may have empty space before the content (x0 offset)
+        const gisDziW = gisInfo ? gisInfo.w : gisPxW;
+        const gisDziH = gisInfo ? gisInfo.h : gisPxH;
+        // Content region in normalised OSD coords [0..1 wide, 0..aspect tall]
+        const osdAspect = gisDziH / gisDziW;
+        const rx = gisImgOffsetX / gisDziW;
+        const ry = gisImgOffsetY / gisDziW;  // OSD uses width as the unit
+        const rw = gisPxW / gisDziW;
+        const rh = gisPxH / gisDziW;
+        gisOsd.viewport.fitBounds(
+            new OpenSeadragon.Rect(rx, ry, rw, rh),
+            true
+        );
+    } catch(e) {}
+}
+
+// ---------------------------------------------------------------------------
+// Overlay positioning — converts GIS image pixel coords to screen pixels
+// ---------------------------------------------------------------------------
+function updateOverlayPosition() {
+    if (!vanillaViewer || !vanillaViewer.isOpen()) return;
+
+    const overlay = document.getElementById('gis-overlay');
+    const mapWrap = document.getElementById('map-wrap');
+    const wrapRect = mapWrap.getBoundingClientRect();
+
+    // Convert vanilla image pixel (gisPixelX, gisPixelY) to viewport coords
+    // vanillaInfo: w=19968, h=16128, sqr=1
+    // OSD image coords are normalised: x/imageWidth, y/imageHeight (width=1, height=aspect)
+    const imgW = vanillaInfo.w;
+    const imgH = vanillaInfo.h;
+    const aspect = imgH / imgW;
+
+    const vpTL = vanillaViewer.viewport.imageToViewportCoordinates(
+        new OpenSeadragon.Point(gisPixelX, gisPixelY)
+    );
+    const vpBR = vanillaViewer.viewport.imageToViewportCoordinates(
+        new OpenSeadragon.Point(gisPixelX + gisPxW, gisPixelY + gisPxH)
+    );
+
+    const screenTL = vanillaViewer.viewport.viewportToViewerElementCoordinates(vpTL);
+    const screenBR = vanillaViewer.viewport.viewportToViewerElementCoordinates(vpBR);
+
+    const left = screenTL.x;
+    const top = screenTL.y;
+    const width = screenBR.x - screenTL.x;
+    const height = screenBR.y - screenTL.y;
+
+    overlay.style.left = left + 'px';
+    overlay.style.top = top + 'px';
+    overlay.style.width = width + 'px';
+    overlay.style.height = height + 'px';
+
+    // Size the inner gis-viewer div to match
+    const gisDiv = document.getElementById('gis-viewer');
+    gisDiv.style.left = '0';
+    gisDiv.style.top = '0';
+    gisDiv.style.width = width + 'px';
+    gisDiv.style.height = height + 'px';
+
+    if (window._gisOsd) {
+        window._gisOsd.viewport.resize({ x: width, y: height });
+        syncGisZoom(window._gisOsd);
+    }
+
+    updateCoordsDisplay();
+}
+
+function updateCoordsDisplay() {
+    const cellX = Math.floor(gisPixelX / 256);
+    const cellY = Math.floor(gisPixelY / 256);
+    const tileX = gisPixelX;
+    const tileY = gisPixelY;
+    document.getElementById('coords').textContent =
+        `Cell: ${cellX}, ${cellY}  |  Tile: ${tileX}, ${tileY}`;
+}
+
+// ---------------------------------------------------------------------------
+// Drag handling — drag the GIS overlay, vanilla map is fixed
+// The GIS overlay captures pointer events; vanilla viewer gets the rest.
+// ---------------------------------------------------------------------------
+function setupDrag() {
+    const overlay = document.getElementById('gis-overlay');
+
+    overlay.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        isDragging = true;
+        overlay.classList.add('dragging');
+        overlay.setPointerCapture(e.pointerId);
+        dragStartMouseX = e.clientX;
+        dragStartMouseY = e.clientY;
+        dragStartGisX = gisPixelX;
+        dragStartGisY = gisPixelY;
+    });
+
+    overlay.addEventListener('pointermove', (e) => {
+        if (!isDragging) return;
+        e.preventDefault();
+
+        const dx = e.clientX - dragStartMouseX;
+        const dy = e.clientY - dragStartMouseY;
+
+        // Convert screen pixel delta to image pixel delta
+        // At current zoom, screenPx / zoom = imagePx (roughly)
+        const zoom = vanillaViewer.viewport.getZoom(true);
+        const containerSize = vanillaViewer.viewport.getContainerSize();
+        // OSD: zoom = containerWidth / imageWidth * viewport.zoom
+        // So 1 screen pixel = imageWidth / (containerWidth * zoom) image pixels
+        const imgPxPerScreenPx = vanillaInfo.w / (containerSize.x * zoom);
+
+        const newGisX = dragStartGisX + dx * imgPxPerScreenPx;
+        const newGisY = dragStartGisY + dy * imgPxPerScreenPx;
+
+        // Snap to cell boundary (256 tiles)
+        gisPixelX = Math.round(newGisX / 256) * 256;
+        gisPixelY = Math.round(newGisY / 256) * 256;
+
+        updateOverlayPosition();
+    });
+
+    overlay.addEventListener('pointerup', (e) => {
+        isDragging = false;
+        overlay.classList.remove('dragging');
+        overlay.releasePointerCapture(e.pointerId);
+    });
+
+    overlay.addEventListener('pointercancel', (e) => {
+        isDragging = false;
+        overlay.classList.remove('dragging');
+    });
+
+    // Belt-and-suspenders: release on document mouseup too
+    document.addEventListener('mouseup', () => {
+        isDragging = false;
+        document.getElementById('gis-overlay').classList.remove('dragging');
+    });
+
+    // Wheel on overlay zooms vanilla map
+    overlay.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        // Forward zoom to vanilla viewer
+        const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+        vanillaViewer.viewport.zoomBy(factor,
+            vanillaViewer.viewport.pointFromPixel(
+                new OpenSeadragon.Point(e.clientX, e.clientY)
+            )
+        );
+        vanillaViewer.viewport.applyConstraints();
+    }, { passive: false });
+}
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+function setupControls() {
+    // Opacity slider
+    const slider = document.getElementById('opacity');
+    const valDisplay = document.getElementById('opacity-val');
+    const overlay = document.getElementById('gis-overlay');
+    slider.addEventListener('input', () => {
+        const v = slider.value;
+        valDisplay.textContent = v + '%';
+        overlay.style.opacity = v / 100;
+    });
+    overlay.style.opacity = slider.value / 100;
+
+    // Toggle
+    document.getElementById('btn-toggle').addEventListener('click', () => {
+        overlayVisible = !overlayVisible;
+        overlay.style.display = overlayVisible ? 'block' : 'none';
+        document.getElementById('btn-toggle').textContent =
+            overlayVisible ? 'Hide GIS' : 'Show GIS';
+    });
+
+    // Apply
+    document.getElementById('btn-apply').addEventListener('click', applyPlacement);
+
+    // Result panel
+    document.getElementById('btn-close').addEventListener('click', () => {
+        document.getElementById('result-panel').classList.remove('visible');
+    });
+    document.getElementById('btn-copy').addEventListener('click', () => {
+        const cmd = document.getElementById('cmd-display').textContent;
+        navigator.clipboard.writeText(cmd).then(() => {
+            document.getElementById('btn-copy').textContent = 'Copied!';
+            setTimeout(() => {
+                document.getElementById('btn-copy').textContent = 'Copy Command';
+            }, 2000);
+        });
+    });
+}
+
+function applyPlacement() {
+    const cellX = Math.floor(gisPixelX / 256);
+    const cellY = Math.floor(gisPixelY / 256);
+    const tileX = gisPixelX;
+    const tileY = gisPixelY;
+
+    const cmd = CONFIG.javaCmd
+        .replace('{cellX}', cellX)
+        .replace('{cellY}', cellY);
+
+    document.getElementById('result-coords').textContent =
+        `Cell X: ${cellX}, Cell Y: ${cellY}  (world tile ${tileX}, ${tileY})`;
+    document.getElementById('cmd-display').textContent = cmd;
+    document.getElementById('result-panel').classList.add('visible');
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+init().catch(err => {
+    document.getElementById('loading-status').textContent = 'Error: ' + err.message;
+    console.error(err);
+});
+</script>
+</body>
+</html>

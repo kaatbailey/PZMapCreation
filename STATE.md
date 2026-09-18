@@ -3342,3 +3342,145 @@ because those hold their size while the bedroom count falls to one.
 6. **The in-game test has not been run.** The doors exist in the data; nobody
    has walked through one.
 
+
+---
+
+## 36. GIS placement tool — map viewer and drag-to-place UI (2026-09-18)
+
+### 36.1 What was built
+
+A placement workflow that lets a user visually align their GIS-generated map
+onto the vanilla PZ world and extract the cell coordinates, which are then
+passed to the generator. Two components:
+
+**`GisCells.java` / `Probe.java` — origin is now a parameter.**
+
+`ORIGIN_CELL_X = 200, ORIGIN_CELL_Y = 200` were static constants. They are now
+`int originCellX, int originCellY` parameters to `GisCells.run()`, threaded
+through all 9 call sites (cell naming, world coords in building directory,
+spawns, WorldGenOverride bounds, BiomeMapWriter). `DEFAULT_ORIGIN_X/Y = 200`
+kept as named constants so existing call sites without placement args still
+work. `Probe.java` accepts args[8]/args[9] as optional cell coordinates.
+
+Verified:
+```
+java -cp out pzformat.Probe giscells \
+    ~/pzgis/buildings.geojson ~/pzgis/roads.geojson ~/pzgis/area.geojson \
+    "$PZ/media" ~/Zomboid/mods PZGisImport 2048 175 160
+# cells occupy 175_160 to 176_161
+# world coords shifted by (200-175)*256 = 6400 tiles — correct
+```
+
+**pzmap2dzi — vanilla world rendered as top-down colour map.**
+
+`pzmap2dzi` cloned to `~/Documents/PZMapCreation/pzmap2dzi`. Configured for
+Garuda Linux (paths, B42, `layer_range: [0, 1]`, `top_view_color_mode:
+carto-zed`). Output at `~/Documents/PZMapCreation/map-output/`.
+
+Key findings during setup:
+- `top_view_color_mode: avg` produces greyscale — isometric tile pixel averages
+  wash out to grey. `carto-zed` assigns fixed colours by tile category.
+- Re-render must delete existing tiles first or render skips everything (0.17s,
+  stale tiles: 0) and reuses old cached greyscale output silently.
+- `deploy` unpacks `openseadragon.zip` to `openseadragon.js` (NOT `.min.js`).
+- Flask server is `server.py` in the deployed html folder, not `main.py server`.
+- Top view URL: `http://localhost:8880/pzmap.html?map_type=top`
+
+**`placement.html` — drag-to-place UI.**
+
+Lives at `~/Documents/PZMapCreation/map-output/html/placement.html`. Served
+by the same Flask server at `http://localhost:8880/placement.html`.
+
+Features:
+- Vanilla world as fixed background (pannable, zoomable with scroll wheel)
+- GIS mod rendered as a draggable overlay (yellow border)
+- Snaps to cell boundaries (256 tiles) as you drag
+- Cell X,Y updates live in the toolbar
+- Opacity slider to see through overlay for road alignment
+- Show/hide toggle
+- Apply button — reads position once, displays the complete Java command
+
+The GIS overlay shows actual rendered map content (roads, buildings, grass in
+carto-zed colours) rather than a placeholder rectangle.
+
+### 36.2 Known issues to fix next session
+
+**Generator accumulates cells across runs.** The mod directory is never
+cleared before writing. Running the generator twice at different origins leaves
+lotheaders from both runs in the same directory. pzmap2dzi then sees both cell
+groups, produces a huge bounding-box image, and the overlay spans the wrong
+area. Fix: `GisCells.run()` should delete cells that don't belong to the
+current run before writing, or wipe the map directory entirely first. This is
+a one-line fix — `Files.deleteIfExists` on the map dir before creating it, or
+delete all `*.lotheader` and `world_*.lotpack` before the cell loop.
+
+**GIS DZI has empty padding.** `x0=-44032` means the DZI origin is world
+tile 0,0 — so 512x512 content sits at image pixel (768,0) in a 1280x512 image.
+The placement page handles this via `gisImgOffsetX/Y` but it is fragile. Fix:
+add `dzi_cell_range[PZGisImport]: [[175, 160, 2, 2]]` to pzmap2dzi's
+`conf.yaml` so the DZI starts at the content. This needs to update each time
+the cell origin changes, which argues for generating it from the generator log.
+
+**Drag polish still needed.** Cell-snapping feels coarse when zoomed in.
+Consider switching to tile-level snapping (1 tile) when zoom is past a
+threshold, with cell snapping at lower zoom.
+
+**`map-output/` should be in `.gitignore`.** Rendered tiles are large and
+regenerable. Only `placement.html` is worth tracking — consider moving it to
+a `web/` folder in the repo root.
+
+### 36.3 How to run the placement tool
+
+```fish
+set PZ ~/.local/share/Steam/steamapps/common/ProjectZomboid/projectzomboid
+
+# 1. Generate GIS mod at a starting position
+cd ~/Documents/PZMapCreation
+java -cp out pzformat.Probe giscells \
+    ~/pzgis/buildings.geojson ~/pzgis/roads.geojson ~/pzgis/area.geojson \
+    "$PZ/media" ~/Zomboid/mods PZGisImport 2048 175 160
+
+# 2. Re-render GIS mod overlay (run after each generation)
+cd ~/Documents/PZMapCreation/pzmap2dzi
+source .venv/bin/activate.fish
+rm -rf ~/Documents/PZMapCreation/map-output/html/map_data/mod_maps/
+python main.py render base_top PZGisImport
+
+# 3. Start server
+cd ~/Documents/PZMapCreation/map-output/html
+python server.py
+
+# 4. Open http://localhost:8880/placement.html
+#    Drag overlay to align roads, click Apply, copy command, run it.
+#    The Java command in the Apply panel has the chosen cell X,Y baked in.
+```
+
+### 36.4 Files changed this session
+
+| File | Change |
+|---|---|
+| `src/main/java/pzformat/GisCells.java` | originCellX/Y parameters replace static constants |
+| `src/main/java/pzformat/Probe.java` | args[8]/args[9] passed to GisCells.run() |
+| `pzmap2dzi/conf/conf.yaml` | Configured for Garuda Linux + B42 + carto-zed |
+| `pzmap2dzi/conf/mod/gisimport.txt` | Mod description for PZGisImport |
+| `map-output/html/placement.html` | Drag-to-place UI |
+
+### 36.5 Standing environment for this project
+
+```fish
+cd ~/Documents/PZMapCreation
+set PZ ~/.local/share/Steam/steamapps/common/ProjectZomboid/projectzomboid
+set GISMAP ~/Zomboid/mods/PZGisImport/common/media/maps/PZGisImport
+set MAPS "$PZ/media/maps/Muldraugh, KY"
+
+# Compile
+javac -encoding UTF-8 -d out (find src/main/java -name '*.java')
+
+# Generate mod
+java -cp out pzformat.Probe giscells \
+    ~/pzgis/buildings.geojson ~/pzgis/roads.geojson ~/pzgis/area.geojson \
+    "$PZ/media" ~/Zomboid/mods PZGisImport 2048 <cellX> <cellY>
+```
+
+Shell is fish. `grep` is aliased to ugrep — use `command grep` with `-e` per
+pattern. `$GISMAP`, `$PZ`, `$MAPS` die between sessions; set them every time.
