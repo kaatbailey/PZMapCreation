@@ -130,12 +130,7 @@ public final class GisCells {
                 List<String> names = new ArrayList<>(pal.all);
                 names.addAll(ground.all);
                 names.addAll(treePal.all);
-                // minLevel=0, maxLevel=1: z=0 is ground level, z=1 is the
-                // roof level. Every chunk body encodes both levels
-                // (SPAN_LEVELS_FULL policy), so empty z=1 squares are
-                // run-length compressed to almost nothing for non-building
-                // chunks.
-                LotHeader h = CellData.newHeader(names, 0, 1);
+                LotHeader h = CellData.newHeader(names, 0, 0);
                 CellData cell = CellData.blank(h, 32);
 
                 int roadIdx = cell.tileIndex(pal.floorRoad);
@@ -353,143 +348,6 @@ public final class GisCells {
                 totalEdgeFill += edgeFilled;
                 totalTufts += tufts;
 
-                // ---- ROOF PASS (z=1) ----
-                // Pitched ridge roof.
-                //
-                // The ridge runs along the building's LONGEST axis, so the two
-                // slopes fall away across the SHORT axis and the gable ends sit
-                // on the short walls.
-                //
-                // The two faces are DIFFERENT tile ranges, not mirror images.
-                // Measured on vanilla 42_36 (footprint 9 deep):
-                //   far face,  distance d from its eave -> roofs_30_02_(29 - d)
-                //   near face, distance d from its eave -> roofs_30_02_(d + 1)
-                // An earlier version used one index for both sides, which drew
-                // the far slope with the near slope's art and made it lean the
-                // wrong way.
-                //
-                // Any computed name that has no sprite is skipped rather than
-                // written, so a gap in the tileset costs one flat square
-                // instead of a red question mark.
-                if (pal.ceilingFloor != null && !pal.roofSlopeNames.isEmpty()) {
-                    int ceilIdx = cell.tileIndex(pal.ceilingFloor);
-
-                    for (int bi = 0; bi < g.buildings.size(); bi++) {
-                        FootprintSnap.Rect fr = g.buildings.get(bi).rect();
-                        int bx = fr.x() - ox, by = fr.y() - oy;
-                        int bw = fr.w(), bh = fr.h();
-                        if (bx + bw <= 0 || by + bh <= 0 || bx >= 256 || by >= 256) continue;
-
-                        // bw >= bh means the ridge runs east-west, so the slope
-                        // is a function of y.
-                        boolean slopeAlongY = bw >= bh;
-                        int span = slopeAlongY ? bh : bw;
-                        if (span < 1) continue;
-
-                        for (int lx = 0; lx < bw; lx++) {
-                            for (int ly = 0; ly < bh; ly++) {
-                                int sx = bx + lx, sy = by + ly;
-                                if (sx < 0 || sy < 0 || sx >= 256 || sy >= 256) continue;
-                                int gx2 = ox + sx, gy2 = oy + sy;
-                                if (gx2 >= g.width || gy2 >= g.height) continue;
-                                if (g.cover[gx2][gy2] != GisImport.Cover.BUILDING) continue;
-
-                                int pos = slopeAlongY ? ly : lx;
-                                int distLow  = pos;                 // from the low-coord eave
-                                int distHigh = (span - 1) - pos;    // from the high-coord eave
-
-                                // Each face keeps its own art. The ridge row
-                                // goes to the low-coord face, matching vanilla.
-                                // Measured down the full column at vanilla
-                                // 42_36 x=33, y=200..209: 29,28,27,26,25 then
-                                // 4,3,2,1,0. The near face is distHigh flat.
-                                // An earlier "+1" here came from a scan cut
-                                // short at y=208, which made the building look
-                                // 9 deep instead of 10.
-                                int tileNum = distLow <= distHigh
-                                        ? 29 - distLow
-                                        : distHigh;
-
-                                String name = "roofs_30_02_" + tileNum;
-                                if (!pal.roofSlopeNames.contains(name)) {
-                                    cell.setSquare(sx, sy, 1, new int[]{ceilIdx}, -1);
-                                    continue;
-                                }
-                                cell.setSquare(sx, sy, 1,
-                                        new int[]{ceilIdx, cell.tileIndex(name)}, -1);
-                            }
-                        }
-                    }
-                }
-
-                // ---- GABLE ENDS (z=1) ----
-                // The triangle that closes each end of the ridge.
-                //
-                // PZ walls are edge-based: a WallW on square x is the boundary
-                // between x-1 and x. So the EAST gable is a WallW on the square
-                // one past the footprint (bx + bw), which is what vanilla 42_36
-                // does, and the WEST gable is a WallW on the building's own
-                // first column (bx). One tile per row of the slope, indexed the
-                // same way the slope is.
-                //
-                // Only done for an east-west ridge. The north-south case needs
-                // WallN gable tiles and those have not been measured, so those
-                // buildings keep an open end rather than get a guessed tile.
-                if (!pal.roofGableNames.isEmpty()) {
-                    for (int bi = 0; bi < g.buildings.size(); bi++) {
-                        FootprintSnap.Rect fr = g.buildings.get(bi).rect();
-                        int bx = fr.x() - ox, by = fr.y() - oy;
-                        int bw = fr.w(), bh = fr.h();
-                        if (bx + bw <= 0 || by + bh <= 0 || bx >= 256 || by >= 256) continue;
-                        if (bw < bh) continue;              // north-south ridge: not measured
-                        int span = bh;
-                        if (span < 1) continue;
-
-                        for (int ly = 0; ly < bh; ly++) {
-                            int distLow  = ly;
-                            int distHigh = (span - 1) - ly;
-                            // Measured down the full gable column at vanilla
-                            // 42_36 x=34, y=200..209: 61,60,59,58,57 then
-                            // 52,51,50,49,48. The near face bases at 48, not
-                            // 49 — an earlier off-by-one here put every near
-                            // tile one step out and the ridge did not meet.
-                            int tileNum = distLow <= distHigh
-                                    ? 61 - distLow
-                                    : 48 + distHigh;
-
-                            String name = "walls_exterior_roofs_30_03_" + tileNum;
-                            if (!pal.roofGableNames.contains(name)) continue;
-
-                            // Vanilla pairs the gable wall with a trim object
-                            // on the SAME square; the wall alone did not read
-                            // as a closed end. At 42_36 wall _61 sat with
-                            // accent _13, i.e. the accent runs 48 below.
-                            String accent = "roofs_accents_30_01_" + (tileNum - 48);
-                            boolean haveAccent = pal.roofAccentNames.contains(accent);
-
-                            int sy = by + ly;
-                            if (sy < 0 || sy >= 256) continue;
-                            if (oy + sy >= g.height) continue;
-
-                            // West gable sits on the building's own first
-                            // column, so append to the roof already there.
-                            appendTileAt(cell, bx, sy, 1, cell.tileIndex(name), -1);
-                            if (haveAccent)
-                                appendTileAt(cell, bx, sy, 1, cell.tileIndex(accent), -1);
-
-                            // East gable sits one square past the footprint,
-                            // which is empty at z=1, so write it outright.
-                            int ex = bx + bw;
-                            if (ex >= 0 && ex < 256 && ox + ex < g.width) {
-                                appendTileAt(cell, ex, sy, 1, cell.tileIndex(name), -1);
-                                if (haveAccent)
-                                    appendTileAt(cell, ex, sy, 1,
-                                            cell.tileIndex(accent), -1);
-                            }
-                        }
-                    }
-                }
-
                 String cellName = (originCellX + cx) + "_" + (originCellY + cy);
                 writeChunkDensity(h, rects);
 
@@ -552,10 +410,6 @@ public final class GisCells {
      * prove the writer agrees with itself.
      */
     static void assertNoEmptySquares(CellData c, String cellName) {
-        // Only z=0 is checked. The "every square must be non-empty or the
-        // chunk goes procedural" invariant applies only to z=0 — the engine
-        // does not apply that rule at z=1. Non-building squares are
-        // legitimately empty at z=1.
         for (int y = 0; y < 256; y++) {
             for (int x = 0; x < 256; x++) {
                 int[] t = c.tilesAt(x, y, 0);
@@ -1048,23 +902,6 @@ public final class GisCells {
     }
 
     /** Append one tile to a square, keeping its existing stack and room id. */
-    /**
-     * appendTile for a given z. The z=0 version above is relied on by the
-     * interior wall and door passes, so it is left alone.
-     */
-    static void appendTileAt(CellData cell, int x, int y, int z, int tile, int roomId) {
-        if (x < 0 || y < 0 || x >= 256 || y >= 256) return;
-        int[] cur = cell.tilesAt(x, y, z);
-        if (cur == null || cur.length == 0) {
-            cell.setSquare(x, y, z, new int[]{tile}, roomId);
-            return;
-        }
-        int[] next = new int[cur.length + 1];
-        System.arraycopy(cur, 0, next, 0, cur.length);
-        next[cur.length] = tile;
-        cell.setSquare(x, y, z, next, roomId);
-    }
-
     static void appendTile(CellData cell, int x, int y, int tile, int roomId) {
         if (x < 0 || y < 0 || x >= 256 || y >= 256) return;
         int[] cur = cell.tilesAt(x, y, 0);

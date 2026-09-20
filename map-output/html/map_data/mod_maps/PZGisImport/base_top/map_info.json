@@ -1,6 +1,6 @@
 {
- "w": 1280, 
- "h": 512, 
+ "w": 2816, 
+ "h": 1536, 
  "skip": 0, 
  "cell_size": 256, 
  "block_size": 8, 
@@ -11,7 +11,7 @@
  "git_branch": "refs/heads/main", 
  "git_commit": "5025122c1a6de655122d79ef84dfcb40a632ea68", 
  "legends": {}, 
- "cell_rects": [[175, 160, 2, 2]], 
+ "cell_rects": [[175, 160, 8, 6]], 
  "x0": -44032, 
  "y0": -40960, 
  "sqr": 1

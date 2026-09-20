@@ -47,6 +47,57 @@ public final class TilePalette {
     public String interiorWallNorth, interiorWallWest;
     public String interiorDoorNorth, interiorDoorWest;
     public String interiorWallNW, interiorWallSE;
+
+    /**
+     * Roof tiles — placed at z=1 over every building footprint square.
+     *
+     * Two tiles per square, measured from vanilla 42_36 kitchen at z=1:
+     *
+     *   ceilingFloor  — the floor tile visible from above and as the ceiling
+     *                   from z=0. Property: attachedFloor + solidfloor +
+     *                   diamondFloor, WITHOUT exterior (that flag appears on
+     *                   industrial roof tiles, not residential ceilings).
+     *                   Vanilla: ceilings_01_0.
+     *
+     *   roofObject    — the pitched-roof overhang object that sits on top of
+     *                   the ceiling tile. Property: WestRoofT.
+     *                   Vanilla: roofs_30_02_48.
+     *
+     * Both go on every square inside the building footprint at z=1 with
+     * room id -1 (no room membership at z=1).
+     */
+    public String ceilingFloor;
+
+    /**
+     * Roof slope tiles that have BOTH a .tiles definition and a sprite,
+     * sorted by their numeric index.
+     *
+     * The roof pass used to build names by string concatenation
+     * ("roofs_30_02_" + n), which skipped the sprite check that every
+     * other palette entry goes through. Tiles with a definition but no
+     * sprite render as a red question mark in game, which is exactly what
+     * happened. Collect the usable ones here instead.
+     */
+    public final Set<String> roofSlopeNames = new java.util.HashSet<>();
+
+    /**
+     * Gable-end wall tiles, sprite-verified, from walls_exterior_roofs_30_03.
+     *
+     * These carry WallW and draw the triangle that closes the end of a
+     * pitched roof. Measured on vanilla 42_36: the square one past the east
+     * end of the building runs 61,60,59,58,57 down the far face and
+     * 49,50,51,52 down the near one.
+     */
+    public final Set<String> roofGableNames = new java.util.HashSet<>();
+
+    /**
+     * Gable trim objects from roofs_accents_30_01.
+     *
+     * Vanilla 42_36 puts one of these on the SAME square as the gable wall
+     * — the wall alone was written first and did not read as a closed end.
+     * Its index tracks the wall's: wall _61 sat with accent _13.
+     */
+    public final Set<String> roofAccentNames = new java.util.HashSet<>();
     public final List<String> all = new ArrayList<>();
 
     /** Candidates that had the right properties but no sprite. */
@@ -130,6 +181,54 @@ public final class TilePalette {
                 "walls_exterior_house_01_", "walls_exterior_", "walls_");
         p.wallSE = p.first(n -> flag(ti, n, "WallSE") && !ti.isOverlay(n),
                 "walls_exterior_house_01_", "walls_exterior_", "walls_");
+        // Ceiling floor tile — covers every building square at z=1.
+        // Measured from vanilla 42_36: ceilings_01_0 carries attachedFloor +
+        // solidfloor + diamondFloor without the exterior flag. The exterior
+        // flag is what industrial roof tiles carry (roofs_03_*) — excluding
+        // it keeps us on the residential ceiling sheet.
+        p.ceilingFloor = p.first(n -> flag(ti, n, "attachedFloor")
+                        && flag(ti, n, "solidfloor")
+                        && flag(ti, n, "diamondFloor")
+                        && !flag(ti, n, "exterior")
+                        && !ti.isOverlay(n),
+                "ceilings_01_", "ceilings_");
+
+        // Roof slope tiles. Selected by the WestRoofT property and kept only
+        // when a sprite exists — a tile with a .tiles definition but no sprite
+        // renders as a red question mark, which is what "missing tile
+        // roofs_30_02" in the console was.
+        //
+        // Stored as a name set rather than an ordered list because the two
+        // faces of a pitched roof are DIFFERENT tile ranges, not mirror images
+        // of one another: measured on vanilla 42_36 the far face runs 29,28,
+        // 27,26,25 from its eave and the near face runs 1,2,3,4 from its own.
+        // Reusing one index on both sides points the slope art the wrong way
+        // on one of them. GisCells computes the vanilla index per face and
+        // checks it against this set.
+        for (String n : ti.byName.keySet()) {
+            if (!flag(ti, n, "WestRoofT") || ti.isOverlay(n)) continue;
+            if (!n.startsWith("roofs_30_02_")) continue;
+            if (!sprites.contains(n)) { p.droppedNoSprite++; continue; }
+            p.roofSlopeNames.add(n);
+        }
+
+        // Gable ends. Same sprite check as the slopes.
+        for (String n : ti.byName.keySet()) {
+            if (!flag(ti, n, "WallW") || ti.isOverlay(n)) continue;
+            if (!n.startsWith("walls_exterior_roofs_30_03_")) continue;
+            if (!sprites.contains(n)) { p.droppedNoSprite++; continue; }
+            p.roofGableNames.add(n);
+        }
+
+        // Gable trim. Name-prefix only: these carry no shared property
+        // flag, so the sprite check is what keeps them honest.
+        for (String n : ti.byName.keySet()) {
+            if (ti.isOverlay(n)) continue;
+            if (!n.startsWith("roofs_accents_30_01_")) continue;
+            if (!sprites.contains(n)) { p.droppedNoSprite++; continue; }
+            p.roofAccentNames.add(n);
+        }
+
         p.interiorWallNW = p.first(n -> flag(ti, n, "WallNW") && !ti.isOverlay(n),
                 "walls_interior_house_01_", "walls_interior_", "walls_");
         p.interiorWallSE = p.first(n -> flag(ti, n, "WallSE") && !ti.isOverlay(n),
@@ -140,12 +239,29 @@ public final class TilePalette {
                 p.wallNW, p.wallSE,
                 p.interiorWallNorth, p.interiorWallWest,
                 p.interiorDoorNorth, p.interiorDoorWest,
-                p.interiorWallNW, p.interiorWallSE}) {
+                p.interiorWallNW, p.interiorWallSE,
+                p.ceilingFloor}) {
             if (s != null && !p.all.contains(s)) {
                 p.all.add(s);
             }
         }
         return p;
+    }
+
+    /** Sorted numeric indices of the usable gable tiles, for diagnosis. */
+    String gableIndices() {
+        List<Integer> ix = new ArrayList<>();
+        for (String n : roofGableNames) { int i = idxOf(n); if (i >= 0) ix.add(i); }
+        Collections.sort(ix);
+        return ix.toString();
+    }
+
+    /** Trailing numeric index of a tile name, or -1. */
+    static int idxOf(String name) {
+        int u = name.lastIndexOf('_');
+        if (u < 0 || u == name.length() - 1) return -1;
+        try { return Integer.parseInt(name.substring(u + 1)); }
+        catch (NumberFormatException e) { return -1; }
     }
 
     /** True if the tile carries {@code prop}, as a bare flag or with a value. */
@@ -319,6 +435,10 @@ public final class TilePalette {
                 + "\n   extSE=" + describe(wallSE)
                 + "\n   intNW=" + describe(interiorWallNW)
                 + "\n   intSE=" + describe(interiorWallSE)
+                + "\n   ceiling=" + describe(ceilingFloor)
+                + "\n   roofSlopes=" + roofSlopeNames.size() + " usable"
+                + "\n   roofGables=" + roofGableNames.size() + " usable " + gableIndices()
+                + "\n   roofAccents=" + roofAccentNames.size() + " usable"
                 + "\n   dropped (properties but no sprite): " + droppedNoSprite;
     }
 }
