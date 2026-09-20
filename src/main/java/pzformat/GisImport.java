@@ -54,9 +54,12 @@ public final class GisImport {
      * @param outbuilding OUTBLDG set — a barn or shed, not a dwelling
      * @param sqMeters    the dataset's own area, or 0 if absent. Compare
      *                    against {@code rect.area()} to check the projection.
+     * @param heightM     HEIGHT in metres from the dataset, or 0 if absent/null.
+     *                    Used by {@link BuildingClass} to detect multi-storey
+     *                    buildings that need a flat roof regardless of OCC_CLS.
      */
     public record Building(FootprintSnap.Rect rect, String occ, String primOcc,
-                           boolean outbuilding, double sqMeters) { }
+                           boolean outbuilding, double sqMeters, double heightM) { }
 
     /** Every building placed, in import order. */
     public final List<Building> buildings = new ArrayList<>();
@@ -197,11 +200,17 @@ public final class GisImport {
                     String s = f.prop("SQMETERS");
                     if (s != null && !s.isEmpty()) sqm = Double.parseDouble(s);
                 } catch (NumberFormatException ignored) { }
+                double heightM = 0;
+                try {
+                    String s = f.prop("HEIGHT");
+                    if (s != null && !s.isEmpty() && !"null".equals(s))
+                        heightM = Double.parseDouble(s);
+                } catch (NumberFormatException ignored) { }
 
                 g.buildings.add(new Building(r, occ,
                         prim == null || prim.isEmpty() ? null : prim,
                         outb != null && !outb.isEmpty() && !"null".equals(outb),
-                        sqm));
+                        sqm, heightM));
             }
         }
 

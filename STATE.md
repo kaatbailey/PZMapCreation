@@ -38,6 +38,9 @@ Shell is fish. `grep` is aliased to ugrep — use `command grep` with `-e` per
 pattern. `$GISMAP`, `$PZ`, `$MAPS` die between sessions; set them every time.
 In-game tests need a NEW GAME, not a resumed save.
 
+**server.py requires the pzmap2dzi virtualenv** — run it from inside
+`source .venv/bin/activate.fish` or flask will not be found.
+
 ---
 
 ## 1. What this project is
@@ -99,28 +102,39 @@ living-room re-floor leaves all walls, doors, windows, and objects intact.
   `bedroom`, `bathroom`, `barn`, etc.) written into lotheader with correct
   membership — the engine uses these for loot and zombie spawning.
 - Interior walls and doors on a spanning-tree so no room can be sealed off.
-- Exterior doors placed on the road-facing side of eligible rooms
-  (livingroom, kitchen, hall, laundry, barn, etc. — never bedroom).
-- Doors WORK. Walked through them in game 2026-08-19. The earlier bug
-  (appending DoorWall beside the raster wall left the plain wall winning for
-  collision) is fixed in `replaceTile`.
+- Exterior door OPENINGS placed on the road-facing side of eligible rooms
+  (livingroom, kitchen, hall, laundry, barn, etc. — never bedroom). The wall
+  tile is replaced with a DoorWall tile. Door OBJECTS (the openable door) are
+  not yet placed — see §3.
 - Biome map (`biomemap_X_Y.png`) — makes terrain continuous across the mod
   boundary; the engine generates matching vegetation on authored cells.
 - Spawn points on road squares. `spawnpoints.lua` uses the legacy 300-tile
   grid (not B42's 256) — found the hard way.
 - `chunkdata_X_Y.bin` written with correct density per built-up chunk so the
   engine treats those chunks as urban rather than overwriting them.
-- **Pitched roofs at z=1.** Ceiling tile plus slope tiles over every building
-  footprint square, gable ends and trim on the column outside each end of the
-  ridge. Cells now encode two levels (`newHeader(names, 0, 1)`). See §10 for
-  the measured tile formulas — they are the whole of it.
+- **Roof type by building class.** `BuildingClass` classifies every building
+  from `OCC_CLS` and `HEIGHT`:
+  - `FLAT_ROOF` (Commercial, Government, Assembly, Education, Industrial, or
+    HEIGHT ≥ 6 m) → ceiling tile only at z=1, no slopes or gables.
+  - `RESIDENTIAL` / `AGRICULTURE` / `OUTBUILDING` → pitched ridge roof.
+  - Pitched roof: ceiling tile plus slope tiles (`roofs_30_02_*`) over every
+    footprint square, gable ends and trim on the column outside each end of
+    the ridge. See §10 for the measured tile formulas.
+- **Windows on exterior walls.** `carveWindows` places window wall tiles
+  (`WindowN`/`WindowW`) plus window object tiles (`fixtures_windows_01_*`)
+  on exterior wall squares, spaced every 3–5 tiles per building (seeded RNG).
+  Corners and door squares are skipped. Verified in game 2026-09-20.
 - `wipeMapDir()` — clears the whole map directory before each run so stale
   cells from a previous origin don't accumulate. Guard refuses to delete
   unless a `.lotheader`, `.lotpack`, `map.info` or `maps/` is present.
-  Added 2026-09-18.
 
 **Cell origin is a parameter.** `GisCells.run()` takes `originCellX`,
 `originCellY`. Default 200,200. `Probe giscells` reads them as args[8]/args[9].
+
+**`HEIGHT` field is now read from GeoJSON** into `GisImport.Building.heightM`.
+Used by `BuildingClass.of()` to force `FLAT_ROOF` on buildings ≥ 6 m tall
+regardless of `OCC_CLS`. Null/empty `HEIGHT` values are handled safely (treated
+as 0).
 
 ### Placement tool — WORKING
 
@@ -138,17 +152,35 @@ living-room re-floor leaves all walls, doors, windows, and objects intact.
 - `pzmap2dzi` is a git dependency, configured for Garuda Linux + B42 +
   `carto-zed` colour mode. Lives at `/pzmap2dzi/` but is gitignored — it is
   a subproject dependency, not source we own.
+- End-to-end usage documented in `map-output/html/PLACEMENT_TOOL.md`.
 
 ---
 
 ## 3. What is NOT done — the honest list
 
-### Roads: no turning tiles
-Roads are rasterised as `cover == ROAD` squares, all given the same flat road
-tile (`floorRoad` from `TilePalette`). PZ has dedicated turning and junction
-tiles (T-intersections, corners, etc.) that prevent the jagged diagonal look.
-Currently diagonal roads are dithered into roadside foliage instead of using
-the correct corner tiles. This is known, visible, and unaddressed.
+### Buildings: no door objects
+`carveEntrances` replaces exterior wall tiles with `DoorWall` tiles, creating
+openings. But no door object (`fixtures_doors_*`) is placed on the square.
+The opening is walkable but shows no door frame or door. Next step: measure
+a vanilla exterior door square with `Probe square`, identify the door object
+tile name and its `Facing` direction, then `appendTile` it in `carveEntrances`.
+
+### Buildings: no furniture or containers
+Nothing in the codebase places objects inside rooms. `TileIndex.container()`
+reads the `container` property, but no caller places objects. Placing
+furniture would activate PZ's loot system automatically — loot tables key off
+(room name, container type), and room names are already correct.
+
+Measured from vanilla 42_38: container tile names and their `container`
+property values:
+- `fixtures_counters_01_45` → `container counter` (kitchen counter, Facing S)
+- `location_hospitality_sunstarmotel_02_46` → `container overhead`
+- `furniture_storage_01_49` → `container sidetable` (bedroom drawers, Facing E)
+
+`StaticModule.prefab` — decompiled. It is a bare record field; `PrefabStructure`
+is not in the decompiled output and `WorldGenChunk` does not reference prefabs.
+The prefab system is not active in the worldgen path. Furniture will be authored
+geometry placed by `appendTile`.
 
 ### Buildings: west gable end does not close
 2026-09-18. Roofs are done and correct apart from one end.
@@ -157,28 +189,30 @@ The EAST gable renders properly — trim runs up both roof edges to the peak and
 the triangle is filled. The WEST gable does not, and you can see into the
 building from that side.
 
-The east placement is measured: vanilla 42_36 puts `walls_exterior_roofs_30_03`
-tiles on the column one square PAST the footprint (x=34 for a building ending
-at x=33). The west placement is **inferred, not measured** — `GisCells` writes
-a `WallW` onto the building's own first column (`bx`), reasoning from PZ's
-edge-based wall convention. 42_36's west side abutted a neighbour so there was
-no west gable in the data to read.
-
 Strong suspicion: the west gable also belongs OUTSIDE the footprint, at
 `bx - 1`, making both ends symmetric. That would be a one-line placement
 change. The measurement that settles it: find a vanilla building with an
 exposed west gable and scan the column one square left of its footprint, the
 same scan that worked for the east (§8).
 
-### Buildings: no furniture or containers
-Nothing in the codebase places objects inside rooms. `TileIndex.container()`
-reads the `container` property, but no caller places objects. Placing
-furniture would activate PZ's loot system automatically — loot tables key off
-(room name, container type), and room names are already correct.
-
 ### Buildings: barn floor is hardwood
 When room type is `barn`, `GisCells` still writes `floorInterior` (hardwood).
 Should be `floorGrass` or `floorDirt`. One-line fix in `GisCells`.
+
+### Buildings: flat roof uses residential ceiling tile
+`FLAT_ROOF` buildings currently write `ceilings_01_0` (the residential ceiling)
+at z=1. The correct tile is from `roofs_03_*` (the industrial/flat roof sheet,
+which carries the `exterior` flag). `TilePalette.roofFlatNames` already collects
+these tiles (92 usable, verified). Not yet measured on a vanilla flat-roofed
+building. The pass writes ceiling-only for now; a future pass will add the
+correct `roofs_03_*` object once measured.
+
+### Buildings: wall skins are all residential
+`TilePalette.SKIN_PREFIXES` covers `house_01`, `house_02`, `wooden_01`,
+`wooden_02`, `house_low_01` — all residential. `FLAT_ROOF` buildings
+(government, commercial, etc.) still use these skins. Correct skin discovery
+for commercial/concrete/brick walls is not yet implemented. `BuildingClass` is
+already available as the routing key.
 
 ### BuildingPlan self-test failing
 `FINDINGS_E13_2026-08-19_for_PZMapCreation.md` records that commit `0247ddc`
@@ -201,55 +235,61 @@ it is derived from the DZI's `map_info.json` at load time, which must be
 re-rendered after every generation. If coordinates change, the overlay is wrong
 until re-rendered.
 
+### Minimap
+`Probe mapdir` checks for `worldmap.xml`, `worldmap-forest.xml`, `thumb.png`
+and reports them missing. No writer exists yet. The minimap is what appears on
+the in-game map screen. Not started.
+
 ---
 
 ## 4. What comes next, in priority order
 
-### 4.1 Road corner and junction tiles
-Roads look jagged at turns because every road square gets the same flat tile.
-PZ has a full set of road corner, T-junction, and crossroad tiles. The fix:
-in `GisCells`'s raster loop, detect each road square's neighbours and select
-the appropriate directional tile instead of always using `floorRoad`.
-
-The measurement before coding: use `Probe findprop` or `Probe square` on a
-vanilla Muldraugh road corner to confirm which property or tile name
-distinguishes corner tiles, and which neighbour configuration maps to which
-tile. Read `TilePalette`'s selection logic — corner tiles may need new palette
-slots alongside `floorRoad`.
+### 4.1 Door objects
+Measure a vanilla exterior door square with `Probe square`. The door object
+tile (`fixtures_doors_*`) needs a `Facing` direction. Then `appendTile` it in
+`carveEntrances` after the `replaceTile` call that places the DoorWall.
 
 ### 4.2 Furniture and containers
-Place objects inside rooms by type. `TileIndex.container()` already reads the
-`container` property. The measurement pass first: `Probe square` / `findprop`
-on a vanilla kitchen and a vanilla bedroom to record what objects are actually
-placed there and on which squares (against wall, centred, etc.).
+Place objects inside rooms by type. Container tile names are measured (§3).
+The measurement pass still needed: `Probe square` on a vanilla kitchen and
+bedroom to record placement positions (against wall, centred, etc.) and
+additional tile names.
 
 Loot activates automatically from (room name, container type). Room names are
 already correct. No separate loot work needed.
 
-`StaticModule.prefab` has never been read in the decompiler. STATE §3 flagged
-this as a decision that needed the decompiler before choosing. **Read it before
-writing a furniture placer.** A prefab places furnished rooms at load time; the
-editor cannot inspect that. A placer authors geometry the editor can validate
-and undo. The decision matters.
+### 4.3 Minimap
+`worldmap.xml` and `thumb.png` are the files the engine reads for the in-game
+map screen. No writer exists. Needs investigation of the XML format.
 
-### 4.3 Fix BuildingPlan self-test
+### 4.4 Fix BuildingPlan self-test
 The layout engine self-test is currently failing on 40×20 footprints
-(bathroom aspect violation). Fix this before adding furniture — the layout
-engine's correctness guarantees are not trustworthy while it fails its own test.
+(bathroom aspect violation). Fix before adding more furniture logic.
 
-### 4.4 Barn floor
+### 4.5 Barn floor
 One-line fix: when room type is `barn`, write `pal.floorGrass` instead of
 `pal.floorInterior`. Do this in `GisCells` where it stamps interior floor tiles.
 
-### 4.5 Close the west gable
+### 4.6 Close the west gable
 Small and well-characterised. See §3 "west gable end does not close" for the
 diagnosis and the exact scan that settles it.
+
+### 4.7 Wall skins for non-residential buildings
+`BuildingClass.FLAT_ROOF` buildings should use concrete/brick skin variants.
+Needs discovery of what exterior wall tilesets exist beyond the five residential
+prefixes in `SKIN_PREFIXES`, and a routing table from `BuildingClass` to skin
+prefix list.
+
+### 4.8 Windows: skin matching on government/commercial buildings
+Low priority. Window wall tiles currently default to `walls_exterior_house_01_*`
+regardless of building class. Once wall skins for flat-roof buildings are done
+(4.7), window skin selection follows the same route.
 
 ## 5. The pipeline in full (what it is, what's missing)
 
 ```
 GeoJSON input
-    buildings.geojson  (footprints + OCC_CLS)
+    buildings.geojson  (footprints + OCC_CLS + HEIGHT)
     roads.geojson      (line features)
     area.geojson       (clip boundary)
         |
@@ -257,25 +297,32 @@ GeoJSON input
 GisImport.rasterise()
     cover[][] — BUILDING / ROAD / WATER / GROUND
     northWall[][] / westWall[][] — building perimeter edges
+    Building record: rect, occ, primOcc, outbuilding, sqMeters, heightM
         |
         v
 GisCells.run()
     ground layer:  solid tile + tuft + blend masks per square      DONE
-    road layer:    flat road tile (no corner/junction logic)        MISSING
+    road layer:    flat road tile (no corner/junction logic)        NOTE: vanilla roads
+                   are also staircase-shaped on diagonals —        are also staircase-shaped
+                   this is correct PZ behaviour, not a bug
     building layer: walls (skinned per building)                   DONE
     room subdivision (BuildingPlan)                                DONE
     interior walls + spanning-tree doors                           DONE
-    exterior doors on road-facing face                             DONE
+    exterior door openings (DoorWall tile)                         DONE
+    exterior door objects (fixtures_doors_*)                       MISSING
+    exterior windows (WindowN/W wall + fixtures_windows_*)         DONE 2026-09-20
     chunkdata density map                                          DONE
     biome map                                                      DONE
     spawn points                                                   DONE
     furniture / containers                                         MISSING
-    roofs (z=1), pitched, with gables                           DONE (west end open)
+    roofs (z=1): flat for commercial/govt, pitched for residential DONE 2026-09-20
+      pitched: slope tiles + gables (west end open)               DONE (west end open)
+      flat: ceiling tile only (roofs_03_* object pass pending)    PARTIAL
         |
         v
 Mod output
     <mod>/42/mod.info
-    <mod>/common/media/maps/<name>/
+    <mod>/common/media/maps/<n>/
         X_Y.lotheader   (rooms, buildings, tile names)
         world_X_Y.lotpack (tile data per square)
         biomemap_X_Y.png
@@ -291,6 +338,7 @@ placement.html
     cell-snap drag                                 DONE
     Apply emits complete java command              DONE
     sub-cell precision                             NOT IMPLEMENTED (by design)
+    end-to-end doc                                 DONE (PLACEMENT_TOOL.md)
 ```
 
 ---
@@ -316,6 +364,15 @@ These cost sessions to learn. Do not re-derive them.
   as a bug — it was the renderer, four separate times.
 - "Indoors" comes from the room definition in the lotheader, not from a roof.
   Rooms work without roofs.
+- `WindowN`/`WindowW` are the primary flags on window wall tiles — they do NOT
+  also carry `WallN`/`WallW` as separate flags. Discovery must use `WindowN`
+  alone, not `WindowN && WallN`.
+- PZ road tiles (`blends_street_01_*`) are all surface texture variants — there
+  are no autotile corner/junction tiles. Diagonal roads are staircase-shaped in
+  vanilla too. Road index numbers 48, 53, 54, 55, 80, 85, 86, 87 etc. are all
+  texture dither variants of the same flat surface. This was verified by
+  scanning cell 13_23 in detail. Do not chase road corner tiles as a missing
+  feature.
 
 **Ground**
 - Grass outranks road in the engine's precedence table. Grass blend masks belong
@@ -336,6 +393,17 @@ These cost sessions to learn. Do not re-derive them.
   everything (0.17s, "stale tiles: 0") and reuses old output.
 - pzmap2dzi: `deploy` unpacks `openseadragon.zip` to `openseadragon.js`
   (not `.min.js`).
+- `Probe lotheader` only prints the first 4 and last tile name — grep its
+  output for specific tile names will miss everything in between. Use
+  `command grep -a -o -e "tilename_prefix_[0-9]*" file.lotheader` on the
+  raw binary instead.
+- `Probe findprop` searches by property KEY name, not tile name prefix. Road
+  tiles have no unique property that isn't shared with grass (`exterior`,
+  `solidfloor`). Use binary grep on lotheader files to find cells containing
+  specific tile names.
+- `server.py` requires flask/waitress from the pzmap2dzi virtualenv. Run it
+  with the venv active or it fails with `ModuleNotFoundError: No module named
+  'flask'`.
 
 ---
 
@@ -351,6 +419,7 @@ These cost sessions to learn. Do not re-derive them.
 | Vanilla maps | `$PZ/media/maps/Muldraugh, KY/` |
 | Decompiled engine | `~/Downloads/ZOMBOIDSTUFF/decompiled/` |
 | Placement tool | `map-output/html/placement.html` (tracked in repo) |
+| Placement doc | `map-output/html/PLACEMENT_TOOL.md` (tracked in repo) |
 | pzmap2dzi | `~/Documents/PZMapCreation/pzmap2dzi/` (gitignored, local only) |
 | Flask server | `map-output/html/server.py` |
 | Placement URL | `http://localhost:8880/placement.html` |
@@ -394,6 +463,14 @@ for y in (seq 200 209)
     end
 end
 
+# Find cells containing a specific tile name (binary grep on lotheaders)
+command grep -rl -e "tilename_prefix" "$PZ/media/maps/Muldraugh, KY" \
+    | command grep -e .lotheader
+
+# List all tile name variants in a cell's lotheader (binary grep)
+command grep -a -o -e "blends_street_01_[0-9]*" \
+    "$PZ/media/maps/Muldraugh, KY/13_23.lotheader" | sort -u
+
 # Vanilla survey (all cells round-trip)
 java -cp out pzformat.Probe survey "$MAPS"
 
@@ -427,6 +504,21 @@ interior pass writes one or the other, never both).
 system keys off room name. Generic `room` gives no loot tables. `BuildingPlan`
 emits typed names from the first call. No separate loot work is needed beyond
 placing containers.
+
+**Road corner tiles are not a thing in PZ.** Investigation 2026-09-20 confirmed
+that `blends_street_01_*` tiles are all surface texture variants (80, 85, 86,
+87, 48, 53, 54, 55 etc. all appear randomly across a road surface). Diagonal
+roads are staircase-shaped in vanilla too. There is nothing to implement here.
+
+**`StaticModule.prefab` is unused.** Decompiled. `PrefabStructure` is not
+present in the decompiled output and `WorldGenChunk` does not reference prefabs.
+Furniture will be authored geometry via `appendTile`.
+
+**`BuildingClass` centralises roof and layout routing.** Added 2026-09-20.
+Maps `OCC_CLS` + `HEIGHT` + `outbuilding` flag to `RESIDENTIAL`, `AGRICULTURE`,
+`OUTBUILDING`, or `FLAT_ROOF`. All other code (roof pass, future wall skin
+selection, future room recipe) consumes this enum rather than re-implementing
+the taxonomy. Height threshold is 6 m (≈ two storeys).
 
 ---
 
@@ -465,52 +557,29 @@ near face:  walls_exterior_roofs_30_03_(48 + distNear)   <- base 48, not 49
 
 **Gable trim** — `roofs_accents_30_01`, on the SAME square as the gable wall.
 Index is the gable wall's index minus 48, confirmed down the whole column
-(61→13, 60→12, ... 52→4, 51→3, 50→2, 49→1, 48→0). This is edge trim that runs
-along the roof's lower edge; it is NOT the triangular fill.
+(61→13, 60→12, ... 52→4, 51→3, 50→2, 49→1, 48→0).
 
 **There is no triangular wall tileset.** The building's own last column at z=1
 carries only ceiling and slope tiles — no walls at all. The triangle is drawn
-entirely by the gable tiles on the outside column. Two sessions were nearly
-spent looking for a fill tileset that does not exist.
+entirely by the gable tiles on the outside column.
 
 **Ceiling tile** — `ceilings_01_0`, selected by `attachedFloor + solidfloor +
 diamondFloor` WITHOUT `exterior`. The `exterior` flag is what industrial roof
 tiles (`roofs_03_*`) carry; excluding it keeps selection on the residential
 ceiling sheet.
 
+**Flat roof** — `FLAT_ROOF` buildings write only `ceilings_01_0` at z=1 for
+now. `TilePalette.roofFlatNames` collects `roofs_03_*` tiles (92 usable). A
+future pass will write these once a vanilla flat-roofed building has been
+measured.
+
 ### Two traps, both of which cost real time
 
 **Scan the FULL column or the span is wrong.** Both off-by-one bugs came from a
-scan cut short at y=208, which made a 10-deep building look 9 deep and
-manufactured a spurious `+1` on both near-face formulas. The symptom was a
-ridge that did not meet at the peak and a strip of ceiling visible along the
-eave.
+scan cut short at y=208. Symptom: ridge does not meet at the peak.
 
-**Verify tile names against the sprite atlas.** Roof tile names were originally
-built by string concatenation, skipping the `sprites.contains()` check that
-every other palette entry goes through. A tile can have a `.tiles` definition
-and no sprite — it renders as a red question mark and logs `missing tile
-roofs_30_02`. `TilePalette` now exposes `roofSlopeNames`, `roofGableNames` and
-`roofAccentNames` as sprite-verified sets, and the palette printout reports the
-count of each. **Read those counts before loading the game** — a zero there
-explains an empty result in one line instead of a screenshot round trip.
-
-**Beware gable tiles placed on ground squares.** An early attempt wrote gable
-walls onto adjacent grass squares and produced giant transparent diagonal slabs
-across the map. Gables go on the ridge-end columns only.
-
-**`appendTile` is hardcoded to z=0.** Use `appendTileAt(cell, x, y, z, ...)` for
-roof work. The z=0 version is relied on by the interior wall and door passes and
-was left alone deliberately.
-
----
-
-**Ridge along the longest axis, not the facing direction.** An earlier version
-derived ridge orientation from `faceTheRoad`, which put the slopes across the
-wrong axis on long buildings. The rule is architectural: slopes on the long
-sides, gables on the short ends, independent of which way the building faces.
-
-**Roof tiles go through the same sprite verification as everything else.**
-They were briefly special-cased, built by string concatenation with no
-`sprites.contains()` check, and produced fields of red question marks. Any tile
-the generator writes is selected from a sprite-verified set or skipped.
+**Verify tile names against the sprite atlas.** Roof tile names must pass
+`sprites.contains()`. A tile can have a `.tiles` definition and no sprite —
+it renders as a red question mark. `TilePalette` exposes `roofSlopeNames`,
+`roofGableNames`, `roofAccentNames`, and `roofFlatNames` as sprite-verified
+sets. **Read those counts before loading the game.**

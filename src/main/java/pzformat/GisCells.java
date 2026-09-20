@@ -331,6 +331,8 @@ public final class GisCells {
                             ceSkin != null ? cell.tileIndex(ceSkin.wallN()) : wnIdx,
                             ceSkin != null ? cell.tileIndex(ceSkin.wallW()) : wwIdx,
                             ceSkin);
+                    carveWindows(cell, pal, bx, by, fr.w(), fr.h(), g, ox, oy,
+                            ceSkin, wnIdx, wwIdx, brng);
 
                     // One building, all its rooms. The format models this and
                     // we were writing one index per entry.
@@ -354,34 +356,66 @@ public final class GisCells {
                 totalTufts += tufts;
 
                 // ---- ROOF PASS (z=1) ----
-                // Pitched ridge roof.
                 //
-                // The ridge runs along the building's LONGEST axis, so the two
-                // slopes fall away across the SHORT axis and the gable ends sit
-                // on the short walls.
+                // Roof style is determined by BuildingClass:
                 //
-                // The two faces are DIFFERENT tile ranges, not mirror images.
-                // Measured on vanilla 42_36 (footprint 9 deep):
-                //   far face,  distance d from its eave -> roofs_30_02_(29 - d)
-                //   near face, distance d from its eave -> roofs_30_02_(d + 1)
-                // An earlier version used one index for both sides, which drew
-                // the far slope with the near slope's art and made it lean the
-                // wrong way.
+                //   FLAT_ROOF   — Commercial, Government, Assembly, Education,
+                //                 Industrial, or HEIGHT >= 6 m (multi-storey).
+                //                 Ceiling tile only at z=1.  No slope or gable
+                //                 tiles.  A future pass will add roofs_03_*
+                //                 objects once that sheet has been measured on
+                //                 a vanilla building.
                 //
-                // Any computed name that has no sprite is skipped rather than
-                // written, so a gap in the tileset costs one flat square
-                // instead of a red question mark.
-                if (pal.ceilingFloor != null && !pal.roofSlopeNames.isEmpty()) {
+                //   All others  — Pitched ridge roof, measured from vanilla
+                //                 42_36.  See comments below for the formulas.
+                //
+                // Read the roofFlat count in the palette printout before
+                // loading the game: a zero there means roofs_03_* tiles did
+                // not survive sprite verification.
+                if (pal.ceilingFloor != null) {
                     int ceilIdx = cell.tileIndex(pal.ceilingFloor);
 
                     for (int bi = 0; bi < g.buildings.size(); bi++) {
-                        FootprintSnap.Rect fr = g.buildings.get(bi).rect();
+                        GisImport.Building bld = g.buildings.get(bi);
+                        FootprintSnap.Rect fr = bld.rect();
                         int bx = fr.x() - ox, by = fr.y() - oy;
                         int bw = fr.w(), bh = fr.h();
                         if (bx + bw <= 0 || by + bh <= 0 || bx >= 256 || by >= 256) continue;
 
-                        // bw >= bh means the ridge runs east-west, so the slope
-                        // is a function of y.
+                        BuildingClass bc = BuildingClass.of(bld);
+
+                        if (bc == BuildingClass.FLAT_ROOF) {
+                            // Flat roof: ceiling tile only on every footprint
+                            // square.  No slope, no gable.
+                            for (int lx = 0; lx < bw; lx++) {
+                                for (int ly = 0; ly < bh; ly++) {
+                                    int sx = bx + lx, sy = by + ly;
+                                    if (sx < 0 || sy < 0 || sx >= 256 || sy >= 256) continue;
+                                    int gx2 = ox + sx, gy2 = oy + sy;
+                                    if (gx2 >= g.width || gy2 >= g.height) continue;
+                                    if (g.cover[gx2][gy2] != GisImport.Cover.BUILDING) continue;
+                                    cell.setSquare(sx, sy, 1, new int[]{ceilIdx}, -1);
+                                }
+                            }
+                            continue;   // skip pitched slope + gable logic below
+                        }
+
+                        // ---- Pitched ridge roof (RESIDENTIAL / AGRICULTURE /
+                        //      OUTBUILDING) ----
+                        //
+                        // The ridge runs along the building's LONGEST axis, so
+                        // the two slopes fall away across the SHORT axis and the
+                        // gable ends sit on the short walls.
+                        //
+                        // The two faces are DIFFERENT tile ranges, not mirror
+                        // images.  Measured on vanilla 42_36 (footprint 10 deep,
+                        // full column x=33 y=200..209):
+                        //   far face,  dist d from eave -> roofs_30_02_(29 - d)
+                        //   near face, dist d from eave -> roofs_30_02_(d)
+                        // An earlier "+1" on the near face came from a scan cut
+                        // short at y=208, making the building look 9 deep.
+                        if (pal.roofSlopeNames.isEmpty()) continue;
+
                         boolean slopeAlongY = bw >= bh;
                         int span = slopeAlongY ? bh : bw;
                         if (span < 1) continue;
@@ -394,18 +428,10 @@ public final class GisCells {
                                 if (gx2 >= g.width || gy2 >= g.height) continue;
                                 if (g.cover[gx2][gy2] != GisImport.Cover.BUILDING) continue;
 
-                                int pos = slopeAlongY ? ly : lx;
-                                int distLow  = pos;                 // from the low-coord eave
-                                int distHigh = (span - 1) - pos;    // from the high-coord eave
+                                int pos      = slopeAlongY ? ly : lx;
+                                int distLow  = pos;
+                                int distHigh = (span - 1) - pos;
 
-                                // Each face keeps its own art. The ridge row
-                                // goes to the low-coord face, matching vanilla.
-                                // Measured down the full column at vanilla
-                                // 42_36 x=33, y=200..209: 29,28,27,26,25 then
-                                // 4,3,2,1,0. The near face is distHigh flat.
-                                // An earlier "+1" here came from a scan cut
-                                // short at y=208, which made the building look
-                                // 9 deep instead of 10.
                                 int tileNum = distLow <= distHigh
                                         ? 29 - distLow
                                         : distHigh;
@@ -422,7 +448,8 @@ public final class GisCells {
                     }
                 }
 
-                // ---- GABLE ENDS (z=1) ----
+                // ---- GABLE ENDS (z=1) — pitched buildings only ----
+                //
                 // The triangle that closes each end of the ridge.
                 //
                 // PZ walls are edge-based: a WallW on square x is the boundary
@@ -435,9 +462,14 @@ public final class GisCells {
                 // Only done for an east-west ridge. The north-south case needs
                 // WallN gable tiles and those have not been measured, so those
                 // buildings keep an open end rather than get a guessed tile.
+                //
+                // Flat-roof buildings are skipped entirely.
                 if (!pal.roofGableNames.isEmpty()) {
                     for (int bi = 0; bi < g.buildings.size(); bi++) {
-                        FootprintSnap.Rect fr = g.buildings.get(bi).rect();
+                        GisImport.Building bld = g.buildings.get(bi);
+                        if (BuildingClass.of(bld) == BuildingClass.FLAT_ROOF) continue;
+
+                        FootprintSnap.Rect fr = bld.rect();
                         int bx = fr.x() - ox, by = fr.y() - oy;
                         int bw = fr.w(), bh = fr.h();
                         if (bx + bw <= 0 || by + bh <= 0 || bx >= 256 || by >= 256) continue;
@@ -939,6 +971,104 @@ public final class GisCells {
                     return dy < 0 ? BuildingPlan.Facing.NORTH : BuildingPlan.Facing.SOUTH;
                 }
         return BuildingPlan.Facing.SOUTH;
+    }
+
+    /**
+     * Place windows on exterior walls.
+     *
+     * Windows replace a proportion of plain exterior wall squares with a
+     * window wall tile + window object tile.  The same replaceTile pattern
+     * as doors: strip the existing wall first so only one edge object sits
+     * on the square.
+     *
+     * Rules (measured from vanilla buildings):
+     *   - Only on straight wall squares (north-only or west-only, not corners)
+     *   - Skip the door square — doors are already placed by carveEntrances
+     *   - Skip the first and last square of each wall run (the corners)
+     *   - Place roughly every 3rd–5th wall square, seeded per building
+     *   - Use the per-building skin's winN/winW if available, else palette defaults
+     *
+     * Window objects need a matching wall tile (WindowN carries WallN) so the
+     * replaceTile call strips the plain wall and the window wall carries both
+     * the structural wall and the window frame.
+     */
+    static void carveWindows(CellData cell, TilePalette pal,
+                             int bx, int by, int bw, int bh,
+                             GisImport g, int ox, int oy,
+                             TilePalette.WallSkin skin, int wnIdx, int wwIdx,
+                             Random rng) {
+        if (pal.windowWallNorth == null || pal.windowObjectNorth == null) return;
+
+        // Resolve window tile indices — prefer skin, fall back to palette.
+        String winWallNName = (skin != null && skin.winN() != null)
+                ? skin.winN() : pal.windowWallNorth;
+        String winWallWName = (skin != null && skin.winW() != null)
+                ? skin.winW() : pal.windowWallWest;
+
+        int winWallN  = cell.tileIndex(winWallNName);
+        int winWallW  = cell.tileIndex(winWallWName);
+        int winObjN   = cell.tileIndex(pal.windowObjectNorth);
+        int winObjW   = cell.tileIndex(pal.windowObjectWest);
+
+        // The plain wall indices to strip — must match what the raster pass wrote.
+        // Per-skin walls if a skin is active, otherwise the palette defaults.
+        int plainWallN = skin != null ? cell.tileIndex(skin.wallN()) : wnIdx;
+        int plainWallW = skin != null ? cell.tileIndex(skin.wallW()) : wwIdx;
+
+        // Spacing: 3–5 tiles between windows, seeded per building.
+        int spacing = 3 + rng.nextInt(3);
+
+        // North and south exterior wall runs (y = by and y = by+bh).
+        for (int[] run : new int[][]{{by, 1}, {by + bh, 1}}) {
+            int wy = run[0];
+            if (wy < 0 || wy >= 256) continue;
+            int count = 0;
+            for (int lx = 1; lx < bw - 1; lx++) {   // skip corners
+                int wx = bx + lx;
+                if (wx < 0 || wx >= 256) continue;
+                int gx = ox + wx, gy = oy + wy;
+                if (gx < 0 || gy < 0 || gx >= g.width || gy >= g.height) continue;
+                if (!g.northWall[gx][gy]) continue;   // must be a north wall square
+                // Check a door isn't already here.
+                String[] names = cell.tileNamesAt(wx, wy, 0);
+                if (names == null) continue;
+                boolean hasDoor = false;
+                for (String n : names) {
+                    if (n.contains("DoorWall") || n.contains("doorWall")) {
+                        hasDoor = true; break;
+                    }
+                }
+                if (hasDoor) continue;
+                if (++count % spacing != 0) continue;
+                replaceTile(cell, wx, wy, winWallN, true, -1, plainWallN);
+                appendTile(cell, wx, wy, winObjN, -1);
+            }
+        }
+
+        // West and east exterior wall runs (x = bx and x = bx+bw).
+        for (int wx : new int[]{bx, bx + bw}) {
+            if (wx < 0 || wx >= 256) continue;
+            int count = 0;
+            for (int ly = 1; ly < bh - 1; ly++) {   // skip corners
+                int wy = by + ly;
+                if (wy < 0 || wy >= 256) continue;
+                int gx = ox + wx, gy = oy + wy;
+                if (gx < 0 || gy < 0 || gx >= g.width || gy >= g.height) continue;
+                if (!g.westWall[gx][gy]) continue;   // must be a west wall square
+                String[] wnames = cell.tileNamesAt(wx, wy, 0);
+                if (wnames == null) continue;
+                boolean hasDoor = false;
+                for (String n : wnames) {
+                    if (n.contains("DoorWall") || n.contains("doorWall")) {
+                        hasDoor = true; break;
+                    }
+                }
+                if (hasDoor) continue;
+                if (++count % spacing != 0) continue;
+                replaceTile(cell, wx, wy, winWallW, false, -1, plainWallW);
+                appendTile(cell, wx, wy, winObjW, -1);
+            }
+        }
     }
 
     /**

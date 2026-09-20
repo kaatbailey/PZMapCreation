@@ -37,6 +37,8 @@ import java.util.function.Predicate;
 public final class TilePalette {
 
     public String floorInterior, floorRoad, floorGrass, floorWater;
+    public String windowWallNorth, windowWallWest;
+    public String windowObjectNorth, windowObjectWest;
     public String wallNorth, wallWest;
     public String doorWallNorth, doorWallWest;
 
@@ -98,6 +100,22 @@ public final class TilePalette {
      * Its index tracks the wall's: wall _61 sat with accent _13.
      */
     public final Set<String> roofAccentNames = new java.util.HashSet<>();
+
+    /**
+     * Flat / industrial roof tiles from roofs_03_*.
+     *
+     * These carry the {@code exterior} flag (which the residential ceiling
+     * sheet deliberately excludes).  Used for Commercial, Government,
+     * Assembly, Education, Industrial buildings, and any building whose
+     * HEIGHT implies more than one storey.
+     *
+     * Not yet measured on a full vanilla column — for now the pass writes
+     * only the ceiling tile for flat-roof buildings (same tile as pitched),
+     * and this set is reserved for a future object layer once we have
+     * measured what vanilla places on top of a warehouse or store.
+     */
+    public final Set<String> roofFlatNames = new java.util.HashSet<>();
+
     public final List<String> all = new ArrayList<>();
 
     /** Candidates that had the right properties but no sprite. */
@@ -162,6 +180,21 @@ public final class TilePalette {
                 "walls_exterior_house_01_", "walls_exterior_", "walls_");
         p.doorWallWest = p.first(n -> flag(ti, n, "DoorWallW") && !ti.isOverlay(n),
                 "walls_exterior_house_01_", "walls_exterior_", "walls_");
+
+        // Window wall tiles — carry WindowN/WindowW alongside WallN/WallW.
+        // Used as fallback when the per-building skin has no window variant.
+        p.windowWallNorth = p.first(n -> flag(ti, n, "WindowN") && !ti.isOverlay(n),
+                "walls_exterior_house_01_", "walls_exterior_", "walls_");
+        p.windowWallWest = p.first(n -> flag(ti, n, "WindowW") && !ti.isOverlay(n),
+                "walls_exterior_house_01_", "walls_exterior_", "walls_");
+
+        // Window object tiles — the openable frame that sits on the wall.
+        // Measured from vanilla 42_38: fixtures_windows_01_25 (north-facing,
+        // attachedN) and fixtures_windows_01_16 (west-facing, attachedW).
+        p.windowObjectNorth = p.first(n -> flag(ti, n, "windowN") && !ti.isOverlay(n),
+                "fixtures_windows_01_", "fixtures_windows_");
+        p.windowObjectWest = p.first(n -> flag(ti, n, "windowW") && !ti.isOverlay(n),
+                "fixtures_windows_01_", "fixtures_windows_");
 
         // Interior partitions and their doors. Same property tests as the
         // exterior pair, preferring the interior sheet.
@@ -229,6 +262,17 @@ public final class TilePalette {
             p.roofAccentNames.add(n);
         }
 
+        // Flat / industrial roof tiles (roofs_03_*).
+        // These carry the exterior flag — the inverse of the residential
+        // ceiling check above.  Collected here for future use; the roof pass
+        // currently writes only the ceiling tile for flat-roof buildings.
+        for (String n : ti.byName.keySet()) {
+            if (ti.isOverlay(n)) continue;
+            if (!n.startsWith("roofs_03_")) continue;
+            if (!sprites.contains(n)) { p.droppedNoSprite++; continue; }
+            p.roofFlatNames.add(n);
+        }
+
         p.interiorWallNW = p.first(n -> flag(ti, n, "WallNW") && !ti.isOverlay(n),
                 "walls_interior_house_01_", "walls_interior_", "walls_");
         p.interiorWallSE = p.first(n -> flag(ti, n, "WallSE") && !ti.isOverlay(n),
@@ -277,9 +321,13 @@ public final class TilePalette {
 
     /**
      * A complete exterior wall skin for one building.
+     *
+     * winN / winW may be null when the skin sheet has no window wall tiles —
+     * the window pass falls back to the palette defaults in that case.
      */
     public record WallSkin(String wallN, String wallW, String wallNW, String wallSE,
-                           String doorN, String doorW) {
+                           String doorN, String doorW,
+                           String winN, String winW) {
         public String label() {
             return wallN.substring(0, wallN.lastIndexOf('_'));
         }
@@ -307,8 +355,16 @@ public final class TilePalette {
             String se = tmp.first(n -> flag(ti, n, "WallSE") && !ti.isOverlay(n), prefixes);
             String dn = tmp.first(n -> flag(ti, n, "DoorWallN") && !ti.isOverlay(n), prefixes);
             String dw = tmp.first(n -> flag(ti, n, "DoorWallW") && !ti.isOverlay(n), prefixes);
-            if (wn != null && ww != null && nw != null && se != null && dn != null && dw != null)
-                skins.add(new WallSkin(wn, ww, nw, se, dn, dw));
+            if (wn != null && ww != null && nw != null && se != null && dn != null && dw != null) {
+                // Window wall tiles — same skin sheet, optional. Null when the
+                // sheet has no WindowN/WindowW tiles; the window pass falls back
+                // to the palette defaults.
+                String winn = tmp.first(n -> flag(ti, n, "WindowN") && !ti.isOverlay(n),
+                                prefixes);
+                String winw = tmp.first(n -> flag(ti, n, "WindowW") && !ti.isOverlay(n),
+                                prefixes);
+                skins.add(new WallSkin(wn, ww, nw, se, dn, dw, winn, winw));
+            }
         }
         return skins;
     }
@@ -427,6 +483,10 @@ public final class TilePalette {
                 + "\n   wallW=" + describe(wallWest)
                 + "\n   doorN=" + describe(doorWallNorth)
                 + "\n   doorW=" + describe(doorWallWest)
+                + "\n   winWallN=" + describe(windowWallNorth)
+                + "\n   winWallW=" + describe(windowWallWest)
+                + "\n   winObjN=" + describe(windowObjectNorth)
+                + "\n   winObjW=" + describe(windowObjectWest)
                 + "\n   intWallN=" + describe(interiorWallNorth)
                 + "\n   intWallW=" + describe(interiorWallWest)
                 + "\n   intDoorN=" + describe(interiorDoorNorth)
@@ -439,6 +499,7 @@ public final class TilePalette {
                 + "\n   roofSlopes=" + roofSlopeNames.size() + " usable"
                 + "\n   roofGables=" + roofGableNames.size() + " usable " + gableIndices()
                 + "\n   roofAccents=" + roofAccentNames.size() + " usable"
+                + "\n   roofFlat=" + roofFlatNames.size() + " usable (roofs_03_*)"
                 + "\n   dropped (properties but no sprite): " + droppedNoSprite;
     }
 }
