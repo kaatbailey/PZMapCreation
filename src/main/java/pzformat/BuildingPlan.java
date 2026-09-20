@@ -302,10 +302,17 @@ public final class BuildingPlan {
 
     /**
      * Build the room recipe before geometry is applied.
+     *
+     * @param area       building footprint area in tiles
+     * @param occ        OCC_CLS from the GIS dataset, or null
+     * @param primOcc    PRIM_OCC from the GIS dataset, or null
+     * @param outbuilding true if OUTBLDG flag is set
+     * @param rng        seeded per building
      */
     public static List<String> recipe(
             int area,
             String occ,
+            String primOcc,
             boolean outbuilding,
             Random rng) {
 
@@ -340,9 +347,129 @@ public final class BuildingPlan {
             );
         }
 
-        /*
-         * Every normal dwelling starts with these four core rooms.
-         */
+        // ---- Non-residential recipes by OCC_CLS + PRIM_OCC ----
+        // Room names verified against vanilla Muldraugh lotheaders 2026-09-20.
+        // Never use a name that is not in this confirmed set or loot will not
+        // activate.
+
+        if ("Assembly".equals(occ)) {
+            if ("Religious".equals(primOcc)) {
+                // Church: main hall + cemetery + bathroom.
+                // "cemetary" (sic) is the vanilla spelling.
+                List<String> r = new ArrayList<>(List.of("church", "cemetary"));
+                if (area > 60) r.add("bathroom");
+                return r;
+            }
+            // Indoor arena and other assembly: lobby + storage + office + bathroom
+            List<String> r = new ArrayList<>(List.of("lobby", "storage"));
+            if (area > 80) r.add("office");
+            r.add("bathroom");
+            return r;
+        }
+
+        if ("Commercial".equals(occ)) {
+            if ("Retail Trade".equals(primOcc)) {
+                List<String> r = new ArrayList<>(List.of("shop", "storage", "bathroom"));
+                if (area > 100) r.add("storage");
+                return r;
+            }
+            if ("Wholesale Trade".equals(primOcc)) {
+                List<String> r = new ArrayList<>(List.of("storage", "storage", "office", "bathroom"));
+                if (area > 200) r.add("storage");
+                return r;
+            }
+            if ("Hospital".equals(primOcc)) {
+                List<String> r = new ArrayList<>(List.of("medical", "medical", "bathroom", "office"));
+                if (area > 150) r.add("medical");
+                if (area > 300) r.add("medical");
+                return r;
+            }
+            if ("Parking".equals(primOcc)) {
+                // Parking structures have no meaningful rooms.
+                return List.of("garagestorage");
+            }
+            // Professional/Technical Services and other commercial — office building
+            List<String> r = new ArrayList<>(List.of("office", "office", "lobby", "bathroom"));
+            if (area > 100) r.add("breakroom");
+            if (area > 200) r.add("office");
+            if (area > 300) r.add("office");
+            if (area > 200) r.add("bathroom");
+            return r;
+        }
+
+        if ("Government".equals(occ)) {
+            if ("Emergency Response".equals(primOcc)) {
+                // Fire station / police station
+                List<String> r = new ArrayList<>(List.of("office", "storage", "bathroom"));
+                if (area > 100) r.add("security");
+                if (area > 150) r.add("breakroom");
+                return r;
+            }
+            // General Services — government office building
+            List<String> r = new ArrayList<>(List.of("office", "office", "lobby", "bathroom", "hall"));
+            if (area > 150) r.add("office");
+            if (area > 150) r.add("breakroom");
+            if (area > 250) r.add("office");
+            if (area > 250) r.add("bathroom");
+            if (area > 400) r.add("archive");
+            return r;
+        }
+
+        if ("Education".equals(occ)) {
+            List<String> r = new ArrayList<>(List.of("school", "school", "bathroom", "office"));
+            if (area > 100) r.add("school");
+            if (area > 150) r.add("hall");
+            if (area > 200) r.add("cafeteriakitchen");
+            if (area > 200) r.add("bathroom");
+            if (area > 300) r.add("school");
+            return r;
+        }
+
+        if ("Industrial".equals(occ)) {
+            // Light industrial — warehouse + small office
+            List<String> r = new ArrayList<>(List.of("storage", "storage", "office", "bathroom"));
+            if (area > 200) r.add("storage");
+            if (area > 400) r.add("storage");
+            return r;
+        }
+
+        if ("Residential".equals(occ)) {
+            if ("Temporary Lodging".equals(primOcc)) {
+                // Motel
+                List<String> r = new ArrayList<>();
+                int rooms = Math.max(2, area / 30);
+                for (int i = 0; i < rooms; i++) r.add("bedroom");
+                r.add("bathroom");
+                if (area > 150) r.add("lobby");
+                return r;
+            }
+            if ("Multi - Family Dwelling".equals(primOcc)) {
+                // Apartment building — repeated bedroom/bathroom units, lobby
+                // for larger buildings. No livingroom or kitchen per unit —
+                // the engine treats bedroom loot tables as the primary here.
+                List<String> r = new ArrayList<>();
+                int units = Math.max(2, area / 60);
+                for (int i = 0; i < units; i++) {
+                    r.add("bedroom");
+                    if (i % 2 == 0) r.add("bathroom");
+                }
+                if (area > 200) r.add("lobby");
+                return r;
+            }
+            // Single Family Dwelling — fall through to residential recipe below
+        }
+
+        // Unclassified — generic storage/office mix rather than residential.
+        // We don't know what this building is, but putting livingrooms and
+        // bedrooms in an unknown urban building is wrong more often than right.
+        if ("Unclassified".equals(occ) || occ == null || occ.isEmpty()) {
+            if (area <= 24) return List.of("storage");
+            List<String> r = new ArrayList<>(List.of("storage", "office", "bathroom"));
+            if (area > 200) r.add("storage");
+            return r;
+        }
+
+        // ---- Residential recipe (default) ----
         List<String> rooms =
                 new ArrayList<>(
                         List.of(
@@ -383,9 +510,6 @@ public final class BuildingPlan {
             rooms.add("kidsbedroom");
         }
 
-        /*
-         * Additional bedrooms grow slowly.
-         */
         int extra =
                 Math.max(
                         0,
@@ -408,9 +532,6 @@ public final class BuildingPlan {
             beds++;
         }
 
-        /*
-         * Second bathroom belongs to genuinely larger houses.
-         */
         if (beds >= 4
                 && area >= SECOND_BATH_AREA) {
 
@@ -418,6 +539,18 @@ public final class BuildingPlan {
         }
 
         return rooms;
+    }
+
+    /**
+     * Backward-compatible overload used by self-tests and any caller that does
+     * not have primOcc available.
+     */
+    public static List<String> recipe(
+            int area,
+            String occ,
+            boolean outbuilding,
+            Random rng) {
+        return recipe(area, occ, null, outbuilding, rng);
     }
 
     static String pick(

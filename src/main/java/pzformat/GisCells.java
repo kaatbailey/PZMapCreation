@@ -92,7 +92,7 @@ public final class GisCells {
             FootprintSnap.Rect dr = db.rect();
             Random drng = new Random(SEED * 131 + di);
             List<String> dtypes = BuildingPlan.recipe(
-                    dr.area(), db.occ(), db.outbuilding(), drng);
+                    dr.area(), db.occ(), db.primOcc(), db.outbuilding(), drng);
             BuildingPlan.Facing dfacing = faceTheRoad(g, dr);
             int worldX = originCellX * 256 + dr.x();
             int worldY = originCellY * 256 + dr.y();
@@ -284,7 +284,7 @@ public final class GisCells {
                     // same building plans identically from either side.
                     Random brng = new Random(SEED * 131 + bi);
                     List<String> types = BuildingPlan.recipe(
-                            fr.area(), b.occ(), b.outbuilding(), brng);
+                            fr.area(), b.occ(), b.primOcc(), b.outbuilding(), brng);
                     BuildingPlan.Facing facing = faceTheRoad(g, fr);
                     List<BuildingPlan.Room> planned =
                             BuildingPlan.plan(bx, by, fr.w(), fr.h(), types, facing, brng);
@@ -326,13 +326,14 @@ public final class GisCells {
                     carveInterior(cell, pal, planned, idx, brng);
                     TilePalette.WallSkin ceSkin = skins.isEmpty() ? null
                             : skins.get((int) (Math.abs((long) SEED * 131 + bi) % skins.size()));
-                    carveEntrances(cell, pal, planned, idx, bx, by,
+                    java.util.Set<String> doorSquares = carveEntrances(cell, pal, planned, idx, bx, by,
                             fr.w(), fr.h(), facing,
                             ceSkin != null ? cell.tileIndex(ceSkin.wallN()) : wnIdx,
                             ceSkin != null ? cell.tileIndex(ceSkin.wallW()) : wwIdx,
                             ceSkin);
                     carveWindows(cell, pal, bx, by, fr.w(), fr.h(), g, ox, oy,
-                            ceSkin, wnIdx, wwIdx, brng);
+                            ceSkin, wnIdx, wwIdx, brng, doorSquares);
+                    placeFurniture(cell, pal, planned, idx, doorSquares, brng);
 
                     // One building, all its rooms. The format models this and
                     // we were writing one index per entry.
@@ -946,6 +947,28 @@ public final class GisCells {
             boolean door = doorAt.contains(wsq[0] + "," + wsq[1] + "," + wsq[2]);
             int tile = wsq[2] == 1 ? (door ? doorN : wallN) : (door ? doorW : wallW);
             appendTile(cell, wsq[0], wsq[1], tile, roomIndexOf(idx, wsq[3]));
+
+            // Interior door openings also get a frame and door object, same as
+            // exterior. The same fixtures_doors_* tiles work for both.
+            if (door) {
+                boolean north = wsq[2] == 1;
+                int ri = roomIndexOf(idx, wsq[3]);
+                if (north) {
+                    if (pal.doorFrameNorth != null)
+                        appendTile(cell, wsq[0], wsq[1],
+                                cell.tileIndex(pal.doorFrameNorth), ri);
+                    if (pal.doorObjectNorth != null)
+                        appendTile(cell, wsq[0], wsq[1],
+                                cell.tileIndex(pal.doorObjectNorth), ri);
+                } else {
+                    if (pal.doorFrameWest != null)
+                        appendTile(cell, wsq[0], wsq[1],
+                                cell.tileIndex(pal.doorFrameWest), ri);
+                    if (pal.doorObjectWest != null)
+                        appendTile(cell, wsq[0], wsq[1],
+                                cell.tileIndex(pal.doorObjectWest), ri);
+                }
+            }
         }
     }
 
@@ -974,6 +997,106 @@ public final class GisCells {
     }
 
     /**
+     * Place container objects inside rooms to activate PZ's loot system.
+     *
+     * Loot tables key off (room name, container type). Room names are already
+     * correct. Containers are placed against the north wall (y = room.y()) and
+     * west wall (x = room.x()), facing away from the wall, spaced every 2nd
+     * square. Corners and door squares are skipped.
+     *
+     * Tile names verified against sprite atlas 2026-09-20.
+     */
+    static void placeFurniture(CellData cell, TilePalette pal,
+                               List<BuildingPlan.Room> planned, List<Integer> idx,
+                               java.util.Set<String> doorSquares, Random rng) {
+
+        for (int i = 0; i < planned.size(); i++) {
+            BuildingPlan.Room r = planned.get(i);
+            int ri = roomIndexOf(idx, i);
+            if (ri < 0) continue;
+
+            String type = r.type();
+            int rx = r.x(), ry = r.y(), rw = r.w(), rh = r.h();
+
+            // Select container tile(s) for this room type.
+            String northTile = null;  // placed along north wall (y = ry)
+            String westTile  = null;  // placed along west wall  (x = rx)
+            String extraTile = null;  // second item placed at spacing+1
+
+            switch (type) {
+                case "kitchen", "cafeteriakitchen" -> {
+                    northTile = pal.furnitureCounter;
+                    westTile  = pal.furnitureCounter;
+                    extraTile = pal.furnitureFridge;
+                }
+                case "breakroom" -> {
+                    northTile = pal.furnitureCounter;
+                    extraTile = pal.furnitureFridge;
+                }
+                case "office" -> {
+                    northTile = pal.furnitureDeskN;
+                }
+                case "storage", "garagestorage", "armystorage",
+                     "farmstorage", "haystorage" -> {
+                    northTile = pal.furnitureShelvesN;
+                    westTile  = pal.furnitureShelvesW;
+                }
+                case "shop", "electronicsstore", "tobaccostore",
+                     "toolstore", "paintershop" -> {
+                    northTile = pal.furnitureShelvesN;
+                    westTile  = pal.furnitureShelvesW;
+                }
+                case "bedroom", "kidsbedroom" -> {
+                    westTile = pal.furnitureDrawers;
+                }
+                case "medical" -> {
+                    northTile = pal.furnitureShelvesN;
+                }
+                case "restaurant", "diningroom" -> {
+                    // No wall containers — seating area, no loot tiles needed
+                }
+                default -> { /* no furniture */ }
+            }
+
+            // Place along north wall — one square INSIDE (y = ry + 1),
+            // facing south toward the wall. attachedN objects lean against
+            // the wall on the square to their north.
+            if (northTile != null && rh >= 3) {
+                int placed = 0;
+                int fy = ry + 1;  // one square inside the north wall
+                if (fy >= 0 && fy < 256) {
+                    for (int x = rx + 1; x < rx + rw - 1; x++) {
+                        if (x < 0 || x >= 256) continue;
+                        if (doorSquares.contains(x + "," + ry)) continue;
+                        if (placed % 2 == 0) {
+                            appendTile(cell, x, fy, cell.tileIndex(northTile), ri);
+                            if (extraTile != null && placed == 0 && rw > 4)
+                                appendTile(cell, rx + rw - 2, fy,
+                                        cell.tileIndex(extraTile), ri);
+                        }
+                        placed++;
+                    }
+                }
+            }
+
+            // Place along west wall — one square INSIDE (x = rx + 1).
+            if (westTile != null && rw >= 3) {
+                int placed = 0;
+                int fx = rx + 1;  // one square inside the west wall
+                if (fx >= 0 && fx < 256) {
+                    for (int y = ry + 1; y < ry + rh - 1; y++) {
+                        if (y < 0 || y >= 256) continue;
+                        if (doorSquares.contains(rx + "," + y)) continue;
+                        if (placed % 2 == 0)
+                            appendTile(cell, fx, y, cell.tileIndex(westTile), ri);
+                        placed++;
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Place windows on exterior walls.
      *
      * Windows replace a proportion of plain exterior wall squares with a
@@ -996,7 +1119,7 @@ public final class GisCells {
                              int bx, int by, int bw, int bh,
                              GisImport g, int ox, int oy,
                              TilePalette.WallSkin skin, int wnIdx, int wwIdx,
-                             Random rng) {
+                             Random rng, java.util.Set<String> doorSquares) {
         if (pal.windowWallNorth == null || pal.windowObjectNorth == null) return;
 
         // Resolve window tile indices — prefer skin, fall back to palette.
@@ -1029,16 +1152,7 @@ public final class GisCells {
                 int gx = ox + wx, gy = oy + wy;
                 if (gx < 0 || gy < 0 || gx >= g.width || gy >= g.height) continue;
                 if (!g.northWall[gx][gy]) continue;   // must be a north wall square
-                // Check a door isn't already here.
-                String[] names = cell.tileNamesAt(wx, wy, 0);
-                if (names == null) continue;
-                boolean hasDoor = false;
-                for (String n : names) {
-                    if (n.contains("DoorWall") || n.contains("doorWall")) {
-                        hasDoor = true; break;
-                    }
-                }
-                if (hasDoor) continue;
+                if (doorSquares.contains(wx + "," + wy)) continue;  // door here
                 if (++count % spacing != 0) continue;
                 replaceTile(cell, wx, wy, winWallN, true, -1, plainWallN);
                 appendTile(cell, wx, wy, winObjN, -1);
@@ -1055,15 +1169,7 @@ public final class GisCells {
                 int gx = ox + wx, gy = oy + wy;
                 if (gx < 0 || gy < 0 || gx >= g.width || gy >= g.height) continue;
                 if (!g.westWall[gx][gy]) continue;   // must be a west wall square
-                String[] wnames = cell.tileNamesAt(wx, wy, 0);
-                if (wnames == null) continue;
-                boolean hasDoor = false;
-                for (String n : wnames) {
-                    if (n.contains("DoorWall") || n.contains("doorWall")) {
-                        hasDoor = true; break;
-                    }
-                }
-                if (hasDoor) continue;
+                if (doorSquares.contains(wx + "," + wy)) continue;  // door here
                 if (++count % spacing != 0) continue;
                 replaceTile(cell, wx, wy, winWallW, false, -1, plainWallW);
                 appendTile(cell, wx, wy, winObjW, -1);
@@ -1084,12 +1190,13 @@ public final class GisCells {
      * there from the raster pass — appending would leave a wall and a door
      * stacked on one tile.
      */
-    static void carveEntrances(CellData cell, TilePalette pal,
+    static java.util.Set<String> carveEntrances(CellData cell, TilePalette pal,
                                List<BuildingPlan.Room> planned, List<Integer> idx,
                                int bx, int by, int bw, int bh,
                                BuildingPlan.Facing facing, int wnIdx, int wwIdx,
                                TilePalette.WallSkin skin) {
-        if (pal.doorWallNorth == null) return;
+        java.util.Set<String> doorSquares = new java.util.HashSet<>();
+        if (pal.doorWallNorth == null) return doorSquares;
         int doorN = cell.tileIndex(skin != null ? skin.doorN() : pal.doorWallNorth);
         int doorW = cell.tileIndex(skin != null ? skin.doorW() : pal.doorWallWest);
 
@@ -1109,8 +1216,6 @@ public final class GisCells {
                 case WEST  -> { x = r.x();             y = r.y() + r.h() / 2;   north = false; }
                 default    -> { x = r.x() + r.w();     y = r.y() + r.h() / 2;   north = false; }
             }
-            // Only cut where the room genuinely reaches the building's edge —
-            // a clipped room may not.
             boolean onEdge = switch (face) {
                 case NORTH -> r.y() == by;
                 case SOUTH -> r.y() + r.h() == by + bh;
@@ -1119,9 +1224,23 @@ public final class GisCells {
             };
             if (!onEdge) continue;
 
+            doorSquares.add(x + "," + y);
             replaceTile(cell, x, y, north ? doorN : doorW, north,
                     roomIndexOf(idx, i), north ? wnIdx : wwIdx);
+
+            if (north) {
+                if (pal.doorFrameNorth != null)
+                    appendTile(cell, x, y, cell.tileIndex(pal.doorFrameNorth), roomIndexOf(idx, i));
+                if (pal.doorObjectNorth != null)
+                    appendTile(cell, x, y, cell.tileIndex(pal.doorObjectNorth), roomIndexOf(idx, i));
+            } else {
+                if (pal.doorFrameWest != null)
+                    appendTile(cell, x, y, cell.tileIndex(pal.doorFrameWest), roomIndexOf(idx, i));
+                if (pal.doorObjectWest != null)
+                    appendTile(cell, x, y, cell.tileIndex(pal.doorObjectWest), roomIndexOf(idx, i));
+            }
         }
+        return doorSquares;
     }
 
     /**
@@ -1140,6 +1259,8 @@ public final class GisCells {
      *
      * wallIdx is the exterior wall tile for this edge (wnIdx for north,
      * wwIdx for west); there should be exactly one on the square.
+     * nwIdx is the corner (WallNW) tile — also stripped if present, since a
+     * door on a corner square would leave the NW tile blocking collision.
      */
     static void replaceTile(CellData cell, int x, int y, int tile, boolean north,
                             int roomId, int wallIdx) {

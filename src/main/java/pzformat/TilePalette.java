@@ -39,6 +39,8 @@ public final class TilePalette {
     public String floorInterior, floorRoad, floorGrass, floorWater;
     public String windowWallNorth, windowWallWest;
     public String windowObjectNorth, windowObjectWest;
+    public String doorFrameNorth, doorFrameWest;
+    public String doorObjectNorth, doorObjectWest;
     public String wallNorth, wallWest;
     public String doorWallNorth, doorWallWest;
 
@@ -49,6 +51,24 @@ public final class TilePalette {
     public String interiorWallNorth, interiorWallWest;
     public String interiorDoorNorth, interiorDoorWest;
     public String interiorWallNW, interiorWallSE;
+
+    /**
+     * Furniture / container tiles, placed by the furniture pass.
+     *
+     * All tile names verified against sprite atlas 2026-09-20:
+     *   counter   — fixtures_counters_01_0        (kitchen, breakroom)
+     *   desk      — location_business_office_generic_01_0  (office)
+     *   shelves   — furniture_shelving_01_1 (N wall) / _2 (W wall)
+     *   fridge    — appliances_refrigeration_01_0  (kitchen, breakroom)
+     *   wardrobe  — furniture_storage_01_0         (bedroom)
+     */
+    public String furnitureCounter;      // against north wall, Facing S
+    public String furnitureDeskN;        // against north wall
+    public String furnitureShelvesN;     // attachedN — north wall
+    public String furnitureShelvesW;     // attachedW — west wall
+    public String furnitureFridge;       // kitchen / breakroom
+    public String furnitureWardrobe;     // bedroom (two-tile, use sparingly)
+    public String furnitureDrawers;      // bedroom sidetable (single-tile, measured)
 
     /**
      * Roof tiles — placed at z=1 over every building footprint square.
@@ -196,6 +216,24 @@ public final class TilePalette {
         p.windowObjectWest = p.first(n -> flag(ti, n, "windowW") && !ti.isOverlay(n),
                 "fixtures_windows_01_", "fixtures_windows_");
 
+        // Door frame objects — sit on the same square as the DoorWall tile.
+        // Measured from vanilla 42_38: fixtures_doors_frames_01_1 (north,
+        // attachedN + doorFrN) and the west equivalent.
+        p.doorFrameNorth = p.first(n -> flag(ti, n, "doorFrN") && !ti.isOverlay(n),
+                "fixtures_doors_frames_01_", "fixtures_doors_frames_");
+        p.doorFrameWest = p.first(n -> flag(ti, n, "doorFrW") && !ti.isOverlay(n),
+                "fixtures_doors_frames_01_", "fixtures_doors_frames_");
+
+        // Door objects — the actual openable door on the same square.
+        // Measured from vanilla 42_38: fixtures_doors_01_1 (north, attachedN +
+        // doorN). Prefer solid wood doors (no doorTrans).
+        p.doorObjectNorth = p.first(n -> flag(ti, n, "doorN") && !ti.isOverlay(n)
+                        && !flag(ti, n, "doorTrans"),
+                "fixtures_doors_01_", "fixtures_doors_");
+        p.doorObjectWest = p.first(n -> flag(ti, n, "doorW") && !ti.isOverlay(n)
+                        && !flag(ti, n, "doorTrans"),
+                "fixtures_doors_01_", "fixtures_doors_");
+
         // Interior partitions and their doors. Same property tests as the
         // exterior pair, preferring the interior sheet.
         p.interiorWallNorth = p.first(n -> flag(ti, n, "WallN") && !ti.isOverlay(n)
@@ -214,6 +252,36 @@ public final class TilePalette {
                 "walls_exterior_house_01_", "walls_exterior_", "walls_");
         p.wallSE = p.first(n -> flag(ti, n, "WallSE") && !ti.isOverlay(n),
                 "walls_exterior_house_01_", "walls_exterior_", "walls_");
+
+        // Furniture / container tiles.
+        // Counter: fixtures_counters_01_0 — kitchen/breakroom, against north wall.
+        p.furnitureCounter = p.first(n -> "counter".equals(prop(ti, n, "container"))
+                        && !ti.isOverlay(n) && sprites.contains(n),
+                "fixtures_counters_01_", "fixtures_counters_");
+        // Desk: location_business_office_generic_01_0 — office, against north wall.
+        p.furnitureDeskN = p.first(n -> "desk".equals(prop(ti, n, "container"))
+                        && !ti.isOverlay(n) && sprites.contains(n),
+                "location_business_office_generic_01_", "location_business_");
+        // Shelves: furniture_shelving_01_1 (attachedN) and _2 (attachedW).
+        p.furnitureShelvesN = p.first(n -> "shelves".equals(prop(ti, n, "container"))
+                        && flag(ti, n, "attachedN") && !ti.isOverlay(n) && sprites.contains(n),
+                "furniture_shelving_01_", "furniture_shelving_");
+        p.furnitureShelvesW = p.first(n -> "shelves".equals(prop(ti, n, "container"))
+                        && flag(ti, n, "attachedW") && !ti.isOverlay(n) && sprites.contains(n),
+                "furniture_shelving_01_", "furniture_shelving_");
+        // Fridge: appliances_refrigeration_01_0 — kitchen/breakroom.
+        p.furnitureFridge = p.first(n -> "fridge".equals(prop(ti, n, "container"))
+                        && !ti.isOverlay(n) && sprites.contains(n),
+                "appliances_refrigeration_01_", "appliances_refrigeration_");
+        // Wardrobe: furniture_storage_01_0 — bedroom.
+        p.furnitureWardrobe = p.first(n -> "wardrobe".equals(prop(ti, n, "container"))
+                        && !ti.isOverlay(n) && sprites.contains(n),
+                "furniture_storage_01_", "furniture_storage_");
+        // Drawers / sidetable: furniture_storage_01_49 — bedroom, measured from
+        // vanilla 42_38. Single-tile object, container=sidetable.
+        p.furnitureDrawers = p.first(n -> "sidetable".equals(prop(ti, n, "container"))
+                        && !ti.isOverlay(n) && sprites.contains(n),
+                "furniture_storage_01_", "furniture_storage_");
         // Ceiling floor tile — covers every building square at z=1.
         // Measured from vanilla 42_36: ceilings_01_0 carries attachedFloor +
         // solidfloor + diamondFloor without the exterior flag. The exterior
@@ -338,7 +406,9 @@ public final class TilePalette {
             {"walls_exterior_house_02_", "walls_exterior_house_"},
             {"walls_exterior_wooden_01_", "walls_exterior_wooden_"},
             {"walls_exterior_wooden_02_", "walls_exterior_wooden_"},
-            {"walls_exterior_house_low_01_", "walls_exterior_"},
+            // walls_exterior_house_low_01_ is intentionally excluded — low walls
+            // can be vaulted by the player, making building exteriors penetrable
+            // without a door. Only full-height skins are appropriate here.
     };
 
     public static List<WallSkin> discoverSkins(TileIndex ti, Set<String> sprites) {
@@ -483,6 +553,10 @@ public final class TilePalette {
                 + "\n   wallW=" + describe(wallWest)
                 + "\n   doorN=" + describe(doorWallNorth)
                 + "\n   doorW=" + describe(doorWallWest)
+                + "\n   doorFrameN=" + describe(doorFrameNorth)
+                + "\n   doorFrameW=" + describe(doorFrameWest)
+                + "\n   doorObjN=" + describe(doorObjectNorth)
+                + "\n   doorObjW=" + describe(doorObjectWest)
                 + "\n   winWallN=" + describe(windowWallNorth)
                 + "\n   winWallW=" + describe(windowWallWest)
                 + "\n   winObjN=" + describe(windowObjectNorth)
@@ -500,6 +574,13 @@ public final class TilePalette {
                 + "\n   roofGables=" + roofGableNames.size() + " usable " + gableIndices()
                 + "\n   roofAccents=" + roofAccentNames.size() + " usable"
                 + "\n   roofFlat=" + roofFlatNames.size() + " usable (roofs_03_*)"
-                + "\n   dropped (properties but no sprite): " + droppedNoSprite;
+                + "\n   dropped (properties but no sprite): " + droppedNoSprite
+                + "\n   counter=" + describe(furnitureCounter)
+                + "\n   desk=" + describe(furnitureDeskN)
+                + "\n   shelvesN=" + describe(furnitureShelvesN)
+                + "\n   shelvesW=" + describe(furnitureShelvesW)
+                + "\n   fridge=" + describe(furnitureFridge)
+                + "\n   wardrobe=" + describe(furnitureWardrobe)
+                + "\n   drawers=" + describe(furnitureDrawers);
     }
 }
