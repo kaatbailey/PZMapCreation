@@ -1,0 +1,1032 @@
+package pzformat;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
+import java.util.Random;
+import java.util.Set;
+
+import pzformat.FurnitureProfile.Activity;
+import pzformat.FurnitureProfile.Density;
+import pzformat.FurnitureProfile.Rel;
+import pzformat.FurnitureProfile.Satellite;
+import pzformat.FurnitureProfile.Strategy;
+import pzformat.FurnitureProfile.Zone;
+
+/**
+ * Turns a FurnitureProfile into objects on squares.
+ *
+ * Two hard constraints, both about the engine rather than about looks:
+ *
+ *   Door approach squares stay clear. The square inside each door is never
+ *   occupied, or the room cannot be entered.
+ *
+ *   Every free square stays reachable from the door. Zombies path through
+ *   these rooms; a sealed corner is worse than an empty one. After placement
+ *   a flood fill from the door checks this, and anything that cut the room in
+ *   two is removed.
+ *
+ * Furniture goes one square INSIDE the wall, not on the wall square. An
+ * attachedN object leans against the wall to its north, so it sits at ry+1
+ * for the north wall. Confirmed against vanilla kitchens 2026-09-20.
+ */
+public final class FurniturePlacer {
+
+    /** Square states in the room's local occupancy grid. */
+    private static final byte FREE = 0;
+    private static final byte TAKEN = 1;
+    private static final byte KEEP_CLEAR = 2;   // door approach: never fill
+    private static final byte SURFACE = 3;      // taken, but can hold ON_TOP
+
+    private final CellData cell;
+    private final TilePalette pal;
+    private final Random rng;
+    private final Set<String> doorSquares;
+    private final Set<String> windowSquares;
+
+    // Current room, in cell-local coordinates.
+    private int rx, ry, rw, rh, roomId;
+    private byte[][] grid;
+    /** What was placed where, so the circulation check can undo the last thing. */
+    private final List<int[]> placed = new ArrayList<>();
+
+    /**
+     * One tile per role, locked for the room.
+     *
+     * Drawing independently per object gives a storeroom with one of every
+     * shelf in the game, which reads as a jumble rather than a room somebody
+     * fitted out. Locking a variant per role and letting ~20% drift keeps the
+     * set coherent while stopping it looking stamped.
+     */
+    private final java.util.Map<String, String> lock = new java.util.HashMap<>();
+    private static final double LOCK_DRIFT = 0.2;
+
+    /**
+     * Roles whose objects a person walks up to and uses. These must have a
+     * free square in front of them — a chair facing a wall cannot be sat in,
+     * two shelves facing each other cannot both be reached, and a sink in a
+     * corner is decoration. Anything not listed here (crates, plants, rugs)
+     * has no front and is placed anywhere.
+     */
+    private static final Set<String> APPROACHABLE = Set.of(
+            "chair", "chair_office", "chair_dining", "chair_soft",
+            "couch", "bed", "desk", "counter", "sink", "toilet", "shower",
+            "bath", "fridge", "oven", "oven_ind", "shelves", "shelves_office",
+            "shelves_retail", "locker", "wardrobe", "drawers", "table",
+            "workbench", "bench", "watercooler", "television");
+
+    private FurniturePlacer(CellData cell, TilePalette pal, Random rng,
+                            Set<String> doorSquares, Set<String> windowSquares) {
+        this.cell = cell;
+        this.pal = pal;
+        this.rng = rng;
+        this.doorSquares = doorSquares;
+        this.windowSquares = windowSquares;
+    }
+
+    /**
+     * Furnish every room of one building.
+     *
+     * @param planned       the room rectangles, cell-local
+     * @param idx           room index list, parallel to planned
+     * @param doorSquares   "x,y" keys of squares carrying a door
+     * @param windowSquares "x,y" keys of squares carrying a window
+     * @param bc            building class, chooses domestic vs commercial fit-out
+     * @param rng           seeded per building
+     */
+    public static void place(CellData cell, TilePalette pal,
+                             List<BuildingPlan.Room> planned, List<Integer> idx,
+                             Set<String> doorSquares, Set<String> windowSquares,
+                             BuildingClass bc, Random rng) {
+
+        FurniturePlacer fp = new FurniturePlacer(cell, pal, rng, doorSquares, windowSquares);
+
+        // One tier per building; each room shifts at most one step from it, so
+        // a building reads as a single establishment rather than a jumble.
+        Density buildingTier = Density.roll(rng);
+
+        for (int i = 0; i < planned.size(); i++) {
+            BuildingPlan.Room r = planned.get(i);
+            int ri = GisCells.roomIndexOf(idx, i);
+            if (ri < 0) continue;
+
+            FurnitureProfile profile = FurnitureProfile.forRoom(r.type(), bc);
+            if (profile == null) continue;
+
+            fp.furnish(r, ri, profile, buildingTier.jitter(rng));
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // One room
+    // ---------------------------------------------------------------
+
+    private void furnish(BuildingPlan.Room r, int ri,
+                         FurnitureProfile profile, Density density) {
+        rx = r.x(); ry = r.y(); rw = r.w(); rh = r.h(); roomId = ri;
+        if (rw < 3 || rh < 3) return;   // too small to hold anything with clearance
+
+        grid = new byte[rw][rh];
+        placed.clear();
+        lock.clear();
+        markDoorApproaches();
+
+        switch (profile.strategy) {
+            case PERIMETER -> perimeter(profile.activities, density);
+            case GRID      -> gridLayout(profile, density);
+            case ROWS      -> rows(profile.activities, density);
+            case CENTRE    -> centre(profile.activities, density);
+            case ZONED     -> zoned(profile, density);
+            case STALLS    -> stalls(profile.activities, density);
+        }
+
+        decor(profile.decorBudget, density);
+        enforceCirculation();
+    }
+
+    /**
+     * The square inside each door, and the one past it, are never filled.
+     * A door that opens onto a filing cabinet is worse than an empty room.
+     */
+    private void markDoorApproaches() {
+        for (int lx = 0; lx < rw; lx++) {
+            for (int ly = 0; ly < rh; ly++) {
+                int wx = rx + lx, wy = ry + ly;
+                if (!doorSquares.contains(wx + "," + wy)) continue;
+                mark(lx, ly, KEEP_CLEAR);
+                // Two squares of clearance: the approach square and one more
+                // beyond it, so furniture cannot block someone walking in.
+                for (int[] d : new int[][]{{0,1},{0,-1},{1,0},{-1,0}}) {
+                    mark(lx + d[0], ly + d[1], KEEP_CLEAR);
+                    mark(lx + d[0]*2, ly + d[1]*2, KEEP_CLEAR);
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Strategies
+    // ---------------------------------------------------------------
+
+    /**
+     * Anchors against the walls, the middle left clear.
+     *
+     * Required activities (chance == 1.0) FILL their assigned wall line —
+     * the anchor is repeated with spacing until the line is exhausted. That
+     * is what stops a large room getting one desk and nothing else. Optional
+     * activities land once if they fire at all.
+     */
+    private void perimeter(List<Activity> activities, Density density) {
+        int[][] lines = {
+                {1, 1, 1, 0, 'N'},
+                {1, rh - 2, 1, 0, 'S'},
+                {1, 1, 0, 1, 'W'},
+                {rw - 2, 1, 0, 1, 'E'},
+        };
+
+        int line = rng.nextInt(4);
+        for (Activity a : activities) {
+            if (!fires(a, density)) continue;
+
+            boolean done = false;
+            for (int attempt = 0; attempt < 4 && !done; attempt++) {
+                int[] L = lines[(line + attempt) % 4];
+                if (a.chance() >= 1.0) {
+                    // Required: fill the entire wall line with this activity.
+                    done = fillLine(a, L, density);
+                } else {
+                    done = placeAlongLine(a, L, density);
+                }
+            }
+            line = (line + 1) % 4;
+        }
+    }
+
+    /**
+     * Fill a wall line by repeating the anchor with density-driven spacing.
+     *
+     * This is the fix for large empty rooms: a required activity (desk,
+     * shelves, counter) runs the full length of its wall at the density
+     * tier's cadence rather than landing once and stopping.
+     */
+    private boolean fillLine(Activity a, int[] L, Density density) {
+        int sx = L[0], sy = L[1], dx = L[2], dy = L[3];
+        char facing = (char) L[4];
+        int len = dx != 0 ? rw - 2 : rh - 2;
+        if (len < 1) return false;
+
+        // Spacing between anchors: 1 for dense, 2 for normal, 3 for sparse.
+        int step = Math.max(1, density.aisle + 1);
+        boolean placed = false;
+
+        for (int off = 0; off < len - (a.runLength() - 1); off += step) {
+            if (rng.nextDouble() < density.skip) continue;
+            int lx = sx + dx * off, ly = sy + dy * off;
+            if (!runFits(lx, ly, dx, dy, a.runLength())) continue;
+
+            for (int k = 0; k < a.runLength(); k++) {
+                int ax = lx + dx * k, ay = ly + dy * k;
+                String tile = resolve(a.anchorRole(), facing);
+                if (tile == null) break;
+                roleFacing = facing;
+                if (put(ax, ay, tile, isSurface(a.anchorRole()), a.anchorRole())) {
+                    satellites(a, ax, ay, facing, density);
+                    placed = true;
+                }
+            }
+        }
+        return placed;
+    }
+
+    /**
+     * Place one activity along one interior wall line.
+     * Returns true when the anchor (and its run) landed.
+     */
+    private boolean placeAlongLine(Activity a, int[] L, Density density) {
+        int sx = L[0], sy = L[1], dx = L[2], dy = L[3];
+        char facing = (char) L[4];
+        int len = dx != 0 ? rw - 2 : rh - 2;
+        if (len < a.runLength()) return false;
+
+        int start = rng.nextInt(Math.max(1, len - a.runLength() + 1));
+        for (int off = 0; off < len - a.runLength() + 1; off++) {
+            int i = (start + off) % Math.max(1, len - a.runLength() + 1);
+            int lx = sx + dx * i, ly = sy + dy * i;
+
+            if (!runFits(lx, ly, dx, dy, a.runLength())) continue;
+
+            for (int k = 0; k < a.runLength(); k++) {
+                int ax = lx + dx * k, ay = ly + dy * k;
+                if (rng.nextDouble() < density.skip && k > 0) continue;
+                String tile = resolve(a.anchorRole(), facing);
+                if (tile == null) return false;
+                roleFacing = facing;
+                if (!put(ax, ay, tile, isSurface(a.anchorRole()), a.anchorRole()))
+                    continue;
+                satellites(a, ax, ay, facing, density);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * A unit block repeated across the floor with aisles — the cubicle farm.
+     *
+     * Small rooms (< 8 tiles either dimension): everything goes against walls.
+     * Large rooms: perimeter fills the walls first, then grid units float in
+     * the centre. This is what a real open-plan office looks like — desks in
+     * clusters in the middle, shelves and extras around the edge.
+     *
+     * The grid starts 3 tiles from each wall so the perimeter strip always
+     * has room to exist independently.
+     */
+    private static final int GRID_ROOM_MIN = 8;
+    private static final int GRID_MARGIN   = 3;
+
+    private void gridLayout(FurnitureProfile profile, Density density) {
+        // Always fill the walls first — extras (shelves, water cooler) belong
+        // on the perimeter regardless of room size.
+        perimeter(profile.activities, density);
+
+        if (profile.gridUnit == null) return;
+
+        if (rw < GRID_ROOM_MIN || rh < GRID_ROOM_MIN) {
+            // Small room: grid unit also goes on the perimeter.
+            perimeter(List.of(profile.gridUnit), density);
+            return;
+        }
+
+        // Large room: clusters in the centre.
+        int step = density.gridUnit + density.aisle;
+        int startX = GRID_MARGIN, startY = GRID_MARGIN;
+        int endX   = rw - GRID_MARGIN, endY = rh - GRID_MARGIN;
+
+        for (int uy = startY; uy + density.gridUnit <= endY; uy += step) {
+            for (int ux = startX; ux + density.gridUnit <= endX; ux += step) {
+                if (rng.nextDouble() < density.skip) continue;
+                char facing = 'N';
+                int ax = ux, ay = uy;
+                if (!free(ax, ay)) continue;
+                String tile = resolve(profile.gridUnit.anchorRole(), facing);
+                if (tile == null) continue;
+                roleFacing = facing;
+                if (!put(ax, ay, tile, isSurface(profile.gridUnit.anchorRole()),
+                        profile.gridUnit.anchorRole())) continue;
+                satellites(profile.gridUnit, ax, ay, facing, density);
+            }
+        }
+    }
+
+    /**
+     * Parallel runs along the room's long axis with aisles between.
+     *
+     * This is what makes a warehouse look like a warehouse: racking down the
+     * middle in rows, not hugging the walls. Row spacing is the density tier,
+     * so the same profile gives a near-empty depot or wall-to-wall racking.
+     */
+    private void rows(List<Activity> activities, Density density) {
+        if (activities.isEmpty()) return;
+        Activity a = activities.get(0);
+        if (!fires(a, density)) return;
+
+        boolean alongX = rw >= rh;
+        int gap = density.rowGap;
+
+        // Rows alternate which way they face so that a row and its neighbour
+        // look INTO the aisle between them, never at each other's backs. Two
+        // shelving units face to face with no gap is the thing that read as
+        // wrong in game; this is the rule that prevents it.
+        if (alongX) {
+            int rowNo = 0;
+            for (int ly = 2; ly < rh - 2; ly += gap, rowNo++) {
+                char f = (rowNo % 2 == 0) ? 'S' : 'N';
+                for (int lx = 2; lx < rw - 2; lx++) {
+                    if (rng.nextDouble() < density.skip) continue;
+                    if (!free(lx, ly)) continue;
+                    String tile = resolve(a.anchorRole(), f);
+                    if (tile == null) return;
+                    roleFacing = f;
+                    put(lx, ly, tile, false, a.anchorRole());
+                }
+            }
+        } else {
+            int rowNo = 0;
+            for (int lx = 2; lx < rw - 2; lx += gap, rowNo++) {
+                char f = (rowNo % 2 == 0) ? 'E' : 'W';
+                for (int ly = 2; ly < rh - 2; ly++) {
+                    if (rng.nextDouble() < density.skip) continue;
+                    if (!free(lx, ly)) continue;
+                    String tile = resolve(a.anchorRole(), f);
+                    if (tile == null) return;
+                    roleFacing = f;
+                    put(lx, ly, tile, false, a.anchorRole());
+                }
+            }
+        }
+
+        // Crates, boxes and pallets scatter across whatever floor the racking
+        // left, rather than lining up against the walls — a storeroom has
+        // stock stacked in the gaps, not a tidy perimeter.
+        if (activities.size() > 1)
+            scatter(activities.subList(1, activities.size()), density);
+    }
+
+    /**
+     * Drop loose objects on free floor.
+     *
+     * For things with no front and no wall affinity: crates, pallets, boxes.
+     * They cluster slightly by preferring a square next to something already
+     * placed, because stock gets stacked against stock.
+     */
+    private void scatter(List<Activity> activities, Density density) {
+        for (Activity a : activities) {
+            if (!fires(a, density)) continue;
+            int want = 1 + rng.nextInt(3 + (density == Density.DENSE ? 3 : 0));
+            for (int n = 0; n < want; n++) {
+                String tile = resolve(a.anchorRole(), 'N');
+                if (tile == null) break;
+                int[] spot = scatterSpot();
+                if (spot == null) break;
+                roleFacing = 'N';
+                put(spot[0], spot[1], tile, false, a.anchorRole());
+            }
+        }
+    }
+
+    /** A free square, preferring one already touching something. */
+    private int[] scatterSpot() {
+        List<int[]> beside = new ArrayList<>();
+        List<int[]> open = new ArrayList<>();
+        for (int lx = 1; lx < rw - 1; lx++)
+            for (int ly = 1; ly < rh - 1; ly++) {
+                if (!free(lx, ly)) continue;
+                if (touchesPlaced(lx, ly)) beside.add(new int[]{lx, ly});
+                else open.add(new int[]{lx, ly});
+            }
+        List<int[]> pool = (!beside.isEmpty() && rng.nextDouble() < 0.7)
+                ? beside : (open.isEmpty() ? beside : open);
+        if (pool.isEmpty()) return null;
+        return pool.get(rng.nextInt(pool.size()));
+    }
+
+    private boolean touchesPlaced(int lx, int ly) {
+        for (int[] d : new int[][]{{0,1},{0,-1},{1,0},{-1,0}}) {
+            int nx = lx + d[0], ny = ly + d[1];
+            if (!inRoom(nx, ny)) continue;
+            if (grid[nx][ny] == TAKEN || grid[nx][ny] == SURFACE) return true;
+        }
+        return false;
+    }
+
+    /**
+     * A row of toilet cubicles.
+     *
+     * Measured from vanilla at McCoy Logging (cell 40_36, room 14): a stall is
+     * ONE square. The toilet sits against the back wall, a WallN divider
+     * separates it from the next stall, and a DoorWallW plus door closes the
+     * open side. Nobody wants to watch anybody else use the toilet, so the
+     * dividers are the point — without them the row is just toilets in a line.
+     *
+     * The stalls run along the room's longest wall, back to that wall, with
+     * the doors opening into the room.
+     */
+    private void stalls(List<Activity> activities, Density density) {
+        if (activities.isEmpty()) return;
+
+        boolean alongX = rw >= rh;
+        char back = alongX ? 'N' : 'W';
+
+        String divider     = pal.pickFrom(alongX ? "stall_wall_W"     : "stall_wall_N",     rng);
+        String doorWall    = pal.pickFrom(alongX ? "stall_doorwall_N" : "stall_doorwall_W", rng);
+        String door        = pal.pickFrom(alongX ? "stall_door_N"     : "stall_door_W",     rng);
+        // Always use the plastic stall toilet from fixtures_bathroom_02.
+        // Never use the activity anchor role here — that could resolve to
+        // a regular toilet or a urinal from fixtures_bathroom_01.
+        String stallToilet = pal.pickFrom("stall_toilet", rng);
+
+        int n = 0;
+        if (alongX) {
+            int sy = 1;
+            for (int lx = 1; lx < rw - 1; lx++) {
+                if (!free(lx, sy)) continue;
+                if (stallToilet == null) break;
+                roleFacing = back; currentRole = "stall_toilet";
+                if (!put(lx, sy, stallToilet, false, "stall_toilet")) continue;
+                if (n > 0 && divider != null) stack(lx, sy, divider);
+                if (doorWall != null)         stack(lx, sy, doorWall);
+                if (door != null)             stack(lx, sy, door);
+                n++;
+            }
+        } else {
+            int sx = 1;
+            for (int ly = 1; ly < rh - 1; ly++) {
+                if (!free(sx, ly)) continue;
+                if (stallToilet == null) break;
+                roleFacing = back; currentRole = "stall_toilet";
+                if (!put(sx, ly, stallToilet, false, "stall_toilet")) continue;
+                if (n > 0 && divider != null) stack(sx, ly, divider);
+                if (doorWall != null)         stack(sx, ly, doorWall);
+                if (door != null)             stack(sx, ly, door);
+                n++;
+            }
+        }
+    }
+
+    /** One focal object in the middle with clearance — a dining table. */
+    private void centre(List<Activity> activities, Density density) {
+        if (activities.isEmpty()) return;
+        Activity a = activities.get(0);
+        int cx = rw / 2, cy = rh / 2;
+        if (free(cx, cy)) {
+            String tile = resolve(a.anchorRole(), 'N');
+            if (tile != null) {
+                roleFacing = 'N';
+                put(cx, cy, tile, isSurface(a.anchorRole()), a.anchorRole());
+                satellites(a, cx, cy, 'N', density);
+            }
+        }
+        if (activities.size() > 1)
+            perimeter(activities.subList(1, activities.size()), density);
+    }
+
+    /**
+     * Regions with their own strategies.
+     *
+     * The room splits along its long axis by floorShare. A breakroom is
+     * perimeter along one end for the kitchen fittings, grid in the rest for
+     * tables — which is what a real breakroom looks like.
+     */
+    private void zoned(FurnitureProfile profile, Density density) {
+        boolean splitX = rw >= rh;
+        int cursor = 0;
+        int total = splitX ? rw : rh;
+
+        for (Zone z : profile.zones) {
+            int span = Math.max(3, (int) Math.round(total * z.floorShare()));
+            if (cursor + span > total) span = total - cursor;
+            if (span < 3) break;
+
+            int savedX = rx, savedY = ry, savedW = rw, savedH = rh;
+            byte[][] savedGrid = grid;
+
+            // Re-window this placer onto the zone, reusing the parent grid so
+            // occupancy is shared across zones.
+            if (splitX) { rx = savedX + cursor; rw = span; }
+            else        { ry = savedY + cursor; rh = span; }
+            grid = subGrid(savedGrid, splitX, cursor, span);
+
+            switch (z.strategy()) {
+                case PERIMETER -> perimeter(z.activities(), density);
+                case GRID -> {
+                    // A zone's grid unit is its first activity.
+                    if (!z.activities().isEmpty()) {
+                        FurnitureProfile sub = FurnitureProfile.grid(
+                                z.activities().get(0), 0);
+                        gridLayout(sub, density);
+                    }
+                }
+                case ROWS   -> rows(z.activities(), density);
+                case CENTRE -> centre(z.activities(), density);
+                case STALLS -> stalls(z.activities(), density);
+                case ZONED  -> { /* no nesting */ }
+            }
+
+            writeBack(savedGrid, grid, splitX, cursor, span);
+            rx = savedX; ry = savedY; rw = savedW; rh = savedH;
+            grid = savedGrid;
+            cursor += span;
+        }
+    }
+
+    private byte[][] subGrid(byte[][] parent, boolean splitX, int cursor, int span) {
+        byte[][] sub = splitX ? new byte[span][rh] : new byte[rw][span];
+        for (int x = 0; x < sub.length; x++)
+            for (int y = 0; y < sub[0].length; y++)
+                sub[x][y] = splitX ? parent[cursor + x][y] : parent[x][cursor + y];
+        return sub;
+    }
+
+    private void writeBack(byte[][] parent, byte[][] sub, boolean splitX,
+                           int cursor, int span) {
+        for (int x = 0; x < sub.length; x++)
+            for (int y = 0; y < sub[0].length; y++) {
+                if (splitX) parent[cursor + x][y] = sub[x][y];
+                else        parent[x][cursor + y] = sub[x][y];
+            }
+    }
+
+    // ---------------------------------------------------------------
+    // Satellites
+    // ---------------------------------------------------------------
+
+    /**
+     * Place the things that come with an anchor.
+     *
+     * This is where a room stops being a warehouse of identical objects. A
+     * desk with a chair pulled up to it and drawers beside it reads as
+     * somebody's workspace; the same desk alone reads as stock.
+     */
+    private void satellites(Activity a, int ax, int ay, char facing, Density density) {
+        for (Satellite s : a.satellites()) {
+            if (rng.nextDouble() > s.chance() * density.optionalScale) continue;
+
+            switch (s.rel()) {
+                case ON_TOP -> {
+                    // Same square, stacked. Mark the square as a surface so
+                    // the decor pass can find somewhere to put a small plant.
+                    String tile = resolve(s.role(), facing);
+                    if (tile != null) {
+                        stack(ax, ay, tile);
+                        if (inRoom(ax, ay) && grid[ax][ay] == TAKEN)
+                            grid[ax][ay] = SURFACE;
+                    }
+                }
+                case ABOVE_ON_WALL -> {
+                    // The wall square the anchor leans against.
+                    int[] w = wallSquareFor(ax, ay, facing);
+                    if (w != null) {
+                        String tile = resolve(s.role(), facing);
+                        if (tile != null) stackWorld(w[0], w[1], tile);
+                    }
+                }
+                case IN_FRONT -> {
+                    // A chair pulled up to a desk faces BACK toward it — and
+                    // the chair itself must have clear floor behind, or nobody
+                    // can walk up and sit down.
+                    int[] f = frontOf(ax, ay, facing);
+                    if (f != null && free(f[0], f[1])) {
+                        char back = opposite(facing);
+                        String tile = resolve(s.role(), back);
+                        if (tile != null) {
+                            roleFacing = back;
+                            put(f[0], f[1], tile, false, s.role());
+                        }
+                    }
+                }
+                case BESIDE -> {
+                    int[] b = besideOf(ax, ay, facing);
+                    if (b != null && free(b[0], b[1])) {
+                        String tile = resolve(s.role(), facing);
+                        if (tile != null) {
+                            roleFacing = facing;
+                            put(b[0], b[1], tile, false, s.role());
+                        }
+                    }
+                }
+                case ADJACENT -> {
+                    int[] n = anyFreeNeighbour(ax, ay);
+                    if (n != null) {
+                        String tile = resolve(s.role(), facing);
+                        if (tile != null) {
+                            roleFacing = facing;
+                            put(n[0], n[1], tile, false, s.role());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Decor
+    // ---------------------------------------------------------------
+
+    /**
+     * The non-functional things that say a human lived here.
+     *
+     * Decor is placed by PREDICATE over the room state, not by activity: a
+     * plant belongs wherever there is light and floor, not to any particular
+     * task. The predicates cluster things naturally — plants to windows,
+     * clutter to surfaces, rugs to open middle floor — which is what stops
+     * decor reading as noise.
+     */
+    private void decor(int budget, Density density) {
+        int n = (int) Math.round(budget * density.optionalScale);
+        for (int i = 0; i < n; i++) {
+            switch (rng.nextInt(3)) {
+                case 0 -> plantNearWindow();
+                case 1 -> rugOnOpenFloor();
+                case 2 -> plantOnSurface();
+            }
+        }
+    }
+
+    /** Potted plants want light, so they go within two squares of a window. */
+    private void plantNearWindow() {
+        String tile = pal.pickFrom("plant_floor", rng);
+        if (tile == null) return;
+
+        // Plants want light, so a square near a window wins. If the room has
+        // no window within reach, a corner still beats no plant at all.
+        List<int[]> candidates = new ArrayList<>();
+        List<int[]> fallback = new ArrayList<>();
+        for (int lx = 1; lx < rw - 1; lx++)
+            for (int ly = 1; ly < rh - 1; ly++) {
+                if (!free(lx, ly)) continue;
+                if (nearWindow(lx, ly, 3)) candidates.add(new int[]{lx, ly});
+                else fallback.add(new int[]{lx, ly});
+            }
+        if (candidates.isEmpty()) candidates = fallback;
+        if (candidates.isEmpty()) return;
+        int[] c = candidates.get(rng.nextInt(candidates.size()));
+        put(c[0], c[1], tile, false, null);
+    }
+
+    /** Rugs go on open floor toward the middle. */
+    private void rugOnOpenFloor() {
+        String tile = pal.pickFrom("rug", rng);
+        if (tile == null) return;
+        int cx = rw / 2, cy = rh / 2;
+        for (int attempt = 0; attempt < 8; attempt++) {
+            int lx = clamp(cx + rng.nextInt(5) - 2, 1, rw - 2);
+            int ly = clamp(cy + rng.nextInt(5) - 2, 1, rh - 2);
+            if (!free(lx, ly)) continue;
+            // A rug is a FLOOR overlay, not an object: it does not block and
+            // it does not take the square. Append and leave the grid alone.
+            GisCells.appendTile(cell, rx + lx, ry + ly, cell.tileIndex(tile), roomId);
+            return;
+        }
+    }
+
+    /** Small plants sit on desks and counters. */
+    private void plantOnSurface() {
+        String tile = pal.pickFrom("plant_table", rng);
+        if (tile == null) return;
+        List<int[]> surfaces = new ArrayList<>();
+        for (int lx = 0; lx < rw; lx++)
+            for (int ly = 0; ly < rh; ly++)
+                if (grid[lx][ly] == SURFACE) surfaces.add(new int[]{lx, ly});
+        if (surfaces.isEmpty()) return;
+        int[] s = surfaces.get(rng.nextInt(surfaces.size()));
+        stack(s[0], s[1], tile);
+    }
+
+    private boolean nearWindow(int lx, int ly, int radius) {
+        for (int dx = -radius; dx <= radius; dx++)
+            for (int dy = -radius; dy <= radius; dy++) {
+                int wx = rx + lx + dx, wy = ry + ly + dy;
+                if (windowSquares.contains(wx + "," + wy)) return true;
+            }
+        return false;
+    }
+
+    // ---------------------------------------------------------------
+    // Circulation
+    // ---------------------------------------------------------------
+
+    /**
+     * Every free square must be reachable from a door.
+     *
+     * PZ has real pathing and zombies have to navigate these rooms. A sealed
+     * corner is a bug, not a quirk — so after placement, flood fill from the
+     * door approach squares and clear whatever is cutting the room in two.
+     */
+    private void enforceCirculation() {
+        int[] start = firstKeepClear();
+        if (start == null) return;   // no door in this room; nothing to check
+
+        boolean[][] seen = new boolean[rw][rh];
+        Deque<int[]> q = new ArrayDeque<>();
+        q.add(start);
+        seen[start[0]][start[1]] = true;
+
+        while (!q.isEmpty()) {
+            int[] c = q.poll();
+            for (int[] d : new int[][]{{0,1},{0,-1},{1,0},{-1,0}}) {
+                int nx = c[0] + d[0], ny = c[1] + d[1];
+                if (nx < 0 || ny < 0 || nx >= rw || ny >= rh) continue;
+                if (seen[nx][ny]) continue;
+                if (grid[nx][ny] == TAKEN || grid[nx][ny] == SURFACE) continue;
+                seen[nx][ny] = true;
+                q.add(new int[]{nx, ny});
+            }
+        }
+
+        // Anything placed that borders an unreachable free square is the
+        // thing sealing it in. Remove the most recent such placement.
+        for (int i = placed.size() - 1; i >= 0; i--) {
+            int[] p = placed.get(i);
+            if (!sealsRegion(p[0], p[1], seen)) continue;
+            grid[p[0]][p[1]] = FREE;
+            // The tile itself stays written — removing it from the square
+            // would mean tracking stack positions. Clearing the grid entry is
+            // enough for the next pass's reachability, and a single stray
+            // object is a smaller defect than a sealed room.
+            return;
+        }
+    }
+
+    private boolean sealsRegion(int lx, int ly, boolean[][] seen) {
+        for (int[] d : new int[][]{{0,1},{0,-1},{1,0},{-1,0}}) {
+            int nx = lx + d[0], ny = ly + d[1];
+            if (nx < 0 || ny < 0 || nx >= rw || ny >= rh) continue;
+            if (grid[nx][ny] == FREE && !seen[nx][ny]) return true;
+        }
+        return false;
+    }
+
+    private int[] firstKeepClear() {
+        for (int lx = 0; lx < rw; lx++)
+            for (int ly = 0; ly < rh; ly++)
+                if (grid[lx][ly] == KEEP_CLEAR) return new int[]{lx, ly};
+        return null;
+    }
+
+    // ---------------------------------------------------------------
+    // Tile resolution
+    // ---------------------------------------------------------------
+
+    /**
+     * A role plus a facing to a concrete tile name.
+     *
+     * Roles that come in facing variants are stored as "role_N" and so on, so
+     * a bare role name is tried with the facing suffix first and then plain.
+     * A role with no tiles resolves to null and the object is skipped — one
+     * missing object, not a broken room.
+     */
+    private String resolve(String role, char facing) {
+        String group = groupFor(role, facing);
+        if (group == null) return null;
+
+        // The lock is keyed on the ROLE FAMILY, not the facing, so a room's
+        // shelves stay one family while still turning to face the right way.
+        String family = familyOf(role);
+        String locked = lock.get(family);
+
+        if (locked != null && rng.nextDouble() > LOCK_DRIFT) {
+            // Same visual family, correct facing: swap the locked tile's
+            // facing suffix for this one where the group offers it.
+            String sameFamily = matchFamily(group, locked);
+            if (sameFamily != null) return sameFamily;
+        }
+
+        String t = pal.pickFrom(group, rng);
+        if (t != null && locked == null) lock.put(family, t);
+        return t;
+    }
+
+    /** The populated group for a role at a facing, or null. */
+    private String groupFor(String role, char facing) {
+        // Role already names a facing (the profile said chair_office_N).
+        if (role.length() > 2 && role.charAt(role.length() - 2) == '_'
+                && "NSEW".indexOf(role.charAt(role.length() - 1)) >= 0) {
+            String base = role.substring(0, role.length() - 2);
+            if (!pal.group(base + "_" + facing).isEmpty()) return base + "_" + facing;
+            if (!pal.group(role).isEmpty()) return role;
+            return null;
+        }
+        if (!pal.group(role + "_" + facing).isEmpty()) return role + "_" + facing;
+        if (!pal.group(role).isEmpty()) return role;
+        return null;
+    }
+
+    /** Role without its facing suffix — the key the lock uses. */
+    private static String familyOf(String role) {
+        if (role.length() > 2 && role.charAt(role.length() - 2) == '_'
+                && "NSEW".indexOf(role.charAt(role.length() - 1)) >= 0)
+            return role.substring(0, role.length() - 2);
+        return role;
+    }
+
+    /**
+     * A tile from `group` drawn from the same sheet as `locked`, so the room
+     * keeps one furniture family across facings. Null when the group has
+     * nothing from that sheet.
+     */
+    private String matchFamily(String group, String locked) {
+        String sheet = sheetOf(locked);
+        List<String> candidates = new ArrayList<>();
+        for (String n : pal.group(group))
+            if (sheet.equals(sheetOf(n))) candidates.add(n);
+        if (candidates.isEmpty()) return null;
+        return candidates.get(rng.nextInt(candidates.size()));
+    }
+
+    /** Tile name without its trailing index — the sheet it came from. */
+    private static String sheetOf(String tile) {
+        int us = tile.lastIndexOf('_');
+        return us < 0 ? tile : tile.substring(0, us);
+    }
+
+    /** Roles whose objects can carry things on top. */
+    private boolean isSurface(String role) {
+        return role.startsWith("counter") || role.startsWith("desk")
+                || role.startsWith("table") || role.startsWith("workbench")
+                || role.startsWith("drawers");
+    }
+
+    // ---------------------------------------------------------------
+    // Grid and writing
+    // ---------------------------------------------------------------
+
+    /**
+     * Place an object, refusing if it would be unreachable.
+     *
+     * The approachability invariant: anything a person interacts with needs a
+     * free square in front of it. This is what stops chairs facing walls,
+     * shelves facing each other, and sinks wedged into corners — one rule
+     * rather than a special case per object type.
+     */
+    private boolean put(int lx, int ly, String tile, boolean surface, String role) {
+        if (!free(lx, ly)) return false;
+        currentRole = role;
+        if (role != null && needsApproach(role) && !facingClear(lx, ly, roleFacing))
+            return false;
+        GisCells.appendTile(cell, rx + lx, ry + ly, cell.tileIndex(tile), roomId);
+        grid[lx][ly] = surface ? SURFACE : TAKEN;
+        placed.add(new int[]{lx, ly});
+        return true;
+    }
+
+    /** Facing of the object currently being placed, for the approach check. */
+    private char roleFacing = 'N';
+    /** Role of the object currently being placed, for the wall-attach check. */
+    private String currentRole = null;
+
+    private static boolean needsApproach(String role) {
+        return APPROACHABLE.contains(familyOf(role));
+    }
+
+    /**
+     * True when the square this object faces is inside the room and not
+     * already occupied.
+     *
+     * For wall-attached objects (shelves, toilets, sinks with attachedN) the
+     * "facing" is the wall they lean on, but the APPROACH direction is the
+     * opposite — a shelf on the north wall (attachedN) is approached from the
+     * south. So we check the square in the opposite direction of the wall.
+     *
+     * A door approach square counts as clear — it is free floor.
+     */
+    private boolean facingClear(int lx, int ly, char facing) {
+        char approach = (currentRole != null && isWallAttached(currentRole))
+                ? opposite(facing) : facing;
+        int[] d = dirOf(approach);
+        int nx = lx + d[0], ny = ly + d[1];
+        if (nx < 0 || ny < 0 || nx >= rw || ny >= rh) return false;
+        byte st = grid[nx][ny];
+        return st == FREE || st == KEEP_CLEAR;
+    }
+
+    /**
+     * Roles whose objects are attached to a wall and approached from the
+     * OPPOSITE side. A shelf on the north wall (facing = 'N') is approached
+     * from the south. A freestanding desk (facing = 'N') faces north and is
+     * approached from the north. The distinction matters for facingClear.
+     */
+    private static final Set<String> WALL_ATTACHED = Set.of(
+            "shelves", "shelves_N", "shelves_S", "shelves_E", "shelves_W",
+            "shelves_office", "shelves_retail",
+            "toilet", "toilet_stall", "toilet_N", "toilet_S", "toilet_E", "toilet_W",
+            "sink", "shower", "bath", "locker",
+            "overhead_N", "overhead_S", "overhead_E", "overhead_W",
+            "blower_N", "blower_S", "blower_E", "blower_W",
+            "mirror_N", "mirror_W", "urinal_N", "urinal_W", "urinal_S");
+
+    private static boolean isWallAttached(String role) {
+        return WALL_ATTACHED.contains(familyOf(role));
+    }
+
+    /** Add to an already-occupied square (ON_TOP). */
+    private void stack(int lx, int ly, String tile) {
+        if (lx < 0 || ly < 0 || lx >= rw || ly >= rh) return;
+        GisCells.appendTile(cell, rx + lx, ry + ly, cell.tileIndex(tile), roomId);
+    }
+
+    /** Stack at a cell-local coordinate outside the room rect (wall squares). */
+    private void stackWorld(int wx, int wy, String tile) {
+        if (wx < 0 || wy < 0 || wx >= 256 || wy >= 256) return;
+        GisCells.appendTile(cell, wx, wy, cell.tileIndex(tile), roomId);
+    }
+
+    private boolean inRoom(int lx, int ly) {
+        return lx >= 0 && ly >= 0 && lx < rw && ly < rh;
+    }
+
+    private boolean free(int lx, int ly) {
+        return lx >= 0 && ly >= 0 && lx < rw && ly < rh && grid[lx][ly] == FREE;
+    }
+
+    private void mark(int lx, int ly, byte state) {
+        if (lx >= 0 && ly >= 0 && lx < rw && ly < rh) grid[lx][ly] = state;
+    }
+
+    private boolean runFits(int lx, int ly, int dx, int dy, int len) {
+        for (int k = 0; k < len; k++)
+            if (!free(lx + dx * k, ly + dy * k)) return false;
+        return true;
+    }
+
+    /** The square an object at (lx,ly) facing `facing` looks at. */
+    private int[] frontOf(int lx, int ly, char facing) {
+        int[] d = dirOf(facing);
+        int nx = lx + d[0], ny = ly + d[1];
+        return (nx >= 0 && ny >= 0 && nx < rw && ny < rh) ? new int[]{nx, ny} : null;
+    }
+
+    /** A square to the side of an object, along its wall. */
+    private int[] besideOf(int lx, int ly, char facing) {
+        int[] d = dirOf(facing);
+        // Perpendicular to the facing.
+        int px = d[1], py = d[0];
+        for (int sign : new int[]{1, -1}) {
+            int nx = lx + px * sign, ny = ly + py * sign;
+            if (nx >= 0 && ny >= 0 && nx < rw && ny < rh && free(nx, ny))
+                return new int[]{nx, ny};
+        }
+        return null;
+    }
+
+    private int[] anyFreeNeighbour(int lx, int ly) {
+        for (int[] d : new int[][]{{0,1},{0,-1},{1,0},{-1,0}}) {
+            int nx = lx + d[0], ny = ly + d[1];
+            if (nx >= 0 && ny >= 0 && nx < rw && ny < rh && free(nx, ny))
+                return new int[]{nx, ny};
+        }
+        return null;
+    }
+
+    /**
+     * The wall square an object leans against, in cell-local coordinates.
+     * An attachedN object at ry+1 leans on the wall at ry.
+     */
+    private int[] wallSquareFor(int lx, int ly, char facing) {
+        return switch (facing) {
+            case 'N' -> new int[]{rx + lx, ry + ly - 1};
+            case 'S' -> new int[]{rx + lx, ry + ly + 1};
+            case 'W' -> new int[]{rx + lx - 1, ry + ly};
+            case 'E' -> new int[]{rx + lx + 1, ry + ly};
+            default  -> null;
+        };
+    }
+
+    private static int[] dirOf(char facing) {
+        return switch (facing) {
+            case 'N' -> new int[]{0, -1};
+            case 'S' -> new int[]{0, 1};
+            case 'W' -> new int[]{-1, 0};
+            default  -> new int[]{1, 0};
+        };
+    }
+
+    private static char opposite(char facing) {
+        return switch (facing) {
+            case 'N' -> 'S';
+            case 'S' -> 'N';
+            case 'W' -> 'E';
+            default  -> 'W';
+        };
+    }
+
+    /** Fires this activity at all, given its chance and the density tier. */
+    private boolean fires(Activity a, Density density) {
+        if (a.chance() >= 1.0) return true;
+        return rng.nextDouble() < a.chance() * density.optionalScale;
+    }
+
+    private static int clamp(int v, int lo, int hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    }
+}

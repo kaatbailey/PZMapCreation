@@ -35,3 +35,6 @@ gradlew.bat
 map-output/html/map_data/mod_maps/PZGisImport/base_top/layer0.dzi
 map-output/html/map_data/mod_maps/PZGisImport/base_top/layer0.dzi
 map-output/html/map_data/mod_maps/PZGisImport/base_top/layer0.dzi
+*.jpg
+*.empty
+map-output/html/.placement.md.kate-swp

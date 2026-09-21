@@ -141,6 +141,32 @@ public final class TilePalette {
     /** Candidates that had the right properties but no sprite. */
     public int droppedNoSprite = 0;
 
+    /**
+     * Furniture tile groups, keyed by semantic role.
+     *
+     * A group is every sprite-verified tile that fills one role — "counter",
+     * "chair_facing_S", "bed" — so the placer can draw a different variant per
+     * instance and a room stops looking copy-pasted. The single-tile fields
+     * above stay for the legacy placer; new code goes through {@link #group}.
+     *
+     * Role names are the contract between this class and FurnitureProfile.
+     * Every role the profiles reference must be populated in discoverGroups(),
+     * and a role with an empty group is skipped at placement rather than
+     * failing — a missing tileset costs one object, not the whole room.
+     */
+    public final java.util.Map<String, List<String>> groups = new java.util.LinkedHashMap<>();
+
+    /** Tiles for one role, empty if the role was never populated. */
+    public List<String> group(String role) {
+        return groups.getOrDefault(role, List.of());
+    }
+
+    /** One tile from a role, seeded; null when the group is empty. */
+    public String pickFrom(String role, java.util.Random rng) {
+        List<String> g = group(role);
+        return g.isEmpty() ? null : g.get(rng.nextInt(g.size()));
+    }
+
     private Set<String> sprites = Set.of();
     private TileIndex ti;
 
@@ -282,6 +308,8 @@ public final class TilePalette {
         p.furnitureDrawers = p.first(n -> "sidetable".equals(prop(ti, n, "container"))
                         && !ti.isOverlay(n) && sprites.contains(n),
                 "furniture_storage_01_", "furniture_storage_");
+
+        p.discoverGroups();
         // Ceiling floor tile — covers every building square at z=1.
         // Measured from vanilla 42_36: ceilings_01_0 carries attachedFloor +
         // solidfloor + diamondFloor without the exterior flag. The exterior
@@ -399,6 +427,251 @@ public final class TilePalette {
         public String label() {
             return wallN.substring(0, wallN.lastIndexOf('_'));
         }
+    }
+
+    /**
+     * Populate the furniture tile groups from measured tilesets.
+     *
+     * Every tileset and index range here was read off vanilla with
+     * `PaletteScan --find <CustomName>` on 2026-09-20. The CustomName is the
+     * stable identifier — index numbers within a sheet are not, so selection
+     * goes through the name plus the flags that distinguish orientation.
+     *
+     * Roles that come in facing variants get one group per facing, named
+     * "<role>_<N|S|E|W>", because the placer needs to choose the variant that
+     * faces away from the wall it is placed against.
+     */
+    private void discoverGroups() {
+
+        // ---- Seating ----
+        // Chairs carry chairN/S/E/W naming the direction the SITTER faces.
+        // Split by sheet: a swivel office chair at a dining table reads wrong,
+        // and so does a kitchen chair at a desk.
+        for (String d : new String[]{"N", "S", "E", "W"}) {
+            put("chair_" + d, n -> named(n, "Chair") && flag(ti, n, "chair" + d));
+            // Vanilla has no dedicated swivel/office chair tileset — all
+            // chair sheets carry the livingRoom flag and the same basic shape.
+            // chair_office maps to the full furniture_seating_indoor_* set
+            // so offices get a different visual from dining rooms (carpentry_01).
+            put("chair_office_" + d, n -> named(n, "Chair") && flag(ti, n, "chair" + d)
+                    && n.startsWith("furniture_seating_indoor_"));
+            put("chair_dining_" + d, n -> named(n, "Chair") && flag(ti, n, "chair" + d)
+                    && n.startsWith("carpentry_"));
+            put("chair_soft_" + d, n -> named(n, "Chair") && flag(ti, n, "chair" + d)
+                    && n.startsWith("furniture_seating_indoor_"));
+        }
+
+        // Couches come in adjacent index PAIRS that together draw one couch.
+        // Collect only the LOW index of each pair — the placer stamps n and
+        // n+1. Pairs share a facing, so the group is per facing.
+        for (String d : new String[]{"N", "S", "E", "W"})
+            put("couch_" + d, n -> named(n, "Couch") && flag(ti, n, "chair" + d)
+                    && pairLow(n, "Couch", "chair" + d));
+
+        // ---- Tables and desks ----
+        put("table",      n -> named(n, "Table") && flag(ti, n, "IsTable"));
+        put("desk",       n -> "desk".equals(prop(ti, n, "container")));
+        put("workbench",  n -> named(n, "Workbench"));
+        put("bench",      n -> named(n, "School Bench"));
+
+        // ---- Kitchen: domestic ----
+        put("counter",    n -> "counter".equals(prop(ti, n, "container")));
+        put("fridge",     n -> "fridge".equals(prop(ti, n, "container")));
+        put("oven",       n -> named(n, "Oven") && n.startsWith("appliances_cooking_"));
+        put("oven_ind",   n -> named(n, "Oven") && n.startsWith("crafted_"));
+        // Sink: domestic/commercial only. Indices 32-35 in fixtures_sinks_01
+        // have Material=MetalPlates — industrial utility sinks. Exclude them.
+        put("sink", n -> named(n, "Sink")
+                && "Plumbing".equals(prop(ti, n, "Material")));
+        put("microwave",  n -> named(n, "Microwave"));
+        put("toaster",    n -> named(n, "Toaster"));
+
+        // Overhead cabinets — wall-mounted, IsHigh, one group per attach edge.
+        for (String d : new String[]{"N", "S", "E", "W"})
+            put("overhead_" + d, n -> named(n, "Cabinet") && flag(ti, n, "IsHigh")
+                    && flag(ti, n, "attached" + d));
+
+        // ---- Bathroom ----
+        for (String d : new String[]{"N", "S", "E", "W"})
+            put("toilet_" + d, n -> named(n, "Toilet") && flag(ti, n, "attached" + d));
+        put("shower",     n -> named(n, "Shower") && flag(ti, n, "waterPiped"));
+
+        // Toilet stall system — fixtures_bathroom_02, PlasticHard material.
+        // This is the complete self-contained stall kit measured from vanilla
+        // at McCoy Logging 2026-09-20. All geometry is from this one sheet
+        // so stalls are visually consistent (plastic, same colour, no wood).
+        //
+        // Sheet layout (fixtures_bathroom_02):
+        //   _0  WallW partition    _1  WallN partition
+        //   _2  WallNW corner      _3  WallSE corner
+        //   _4/_5   stall toilet (no attach flag — free-standing in stall cell)
+        //   _10 DoorWallW          _11 DoorWallN
+        //   _16 doorW              _17 doorN
+        //   _20-23 repeat walls (lit variant)
+        put("stall_wall_N",     n -> n.startsWith("fixtures_bathroom_02_")
+                && flag(ti, n, "WallN") && !flag(ti, n, "WallNW"));
+        put("stall_wall_W",     n -> n.startsWith("fixtures_bathroom_02_")
+                && flag(ti, n, "WallW") && !flag(ti, n, "WallNW"));
+        put("stall_doorwall_N", n -> n.startsWith("fixtures_bathroom_02_")
+                && flag(ti, n, "DoorWallN"));
+        put("stall_doorwall_W", n -> n.startsWith("fixtures_bathroom_02_")
+                && flag(ti, n, "DoorWallW"));
+        put("stall_door_N",     n -> n.startsWith("fixtures_bathroom_02_")
+                && flag(ti, n, "doorN"));
+        put("stall_door_W",     n -> n.startsWith("fixtures_bathroom_02_")
+                && flag(ti, n, "doorW"));
+        // Stall toilet — no attach flag, free-standing inside the stall cell.
+        put("stall_toilet",     n -> n.startsWith("fixtures_bathroom_02_")
+                && named(n, "Toilet") && pairLowSimple(n, "Toilet"));
+
+        // Urinal — commercial bathrooms only, against a wall.
+        put("urinal_N", n -> named(n, "Urinal") && flag(ti, n, "attachedN"));
+        put("urinal_W", n -> named(n, "Urinal") && flag(ti, n, "attachedW"));
+        put("urinal_S", n -> named(n, "Urinal") && flag(ti, n, "attachedS"));
+
+        // Mirror — a wall overlay above the bathroom counter.
+        put("mirror_N", n -> named(n, "Mirror") && flag(ti, n, "attachedN"));
+        put("mirror_W", n -> named(n, "Mirror") && flag(ti, n, "attachedW"));
+
+        // Bin — bathrooms, offices, breakrooms.
+        put("bin", n -> "bin".equals(prop(ti, n, "container")));
+        // Bath is a 2-tile object: the primary has no IsGridExtensionTile,
+        // the extension does. Collect primaries only.
+        put("bath",       n -> named(n, "Bath") && !flag(ti, n, "IsGridExtensionTile"));
+        for (String d : new String[]{"N", "S", "E", "W"})
+            put("blower_" + d, n -> named(n, "Blower") && flag(ti, n, "attached" + d));
+
+        // ---- Bedroom ----
+        // Beds pair like couches. No facing flag, so pairing is by index only.
+        put("bed",        n -> named(n, "Bed") && pairLowSimple(n, "Bed"));
+        // Home beds exclude medical/hospital sheets so a bedroom does not get
+        // a hospital cot. Only furniture_bedding_01 for residential rooms.
+        put("bed_home",   n -> named(n, "Bed") && pairLowSimple(n, "Bed")
+                && n.startsWith("furniture_bedding_01_"));
+        put("drawers",    n -> "sidetable".equals(prop(ti, n, "container")));
+        put("wardrobe",   n -> "wardrobe".equals(prop(ti, n, "container")));
+
+        // ---- Storage / retail ----
+        // Shelving is split by SOURCE SHEET, not just by shape. The tile's
+        // container value is "shelves" either way, but the sheet decides what
+        // the loot system puts in it: location_shop_* shelving pulls retail
+        // stock, which is wrong in an office. Office and storage rooms draw
+        // from furniture_shelving_01 only.
+        for (String d : new String[]{"N", "S", "E", "W"})
+            put("shelves_" + d, n -> "shelves".equals(prop(ti, n, "container"))
+                    && n.startsWith("furniture_shelving_")
+                    && flag(ti, n, "attached" + d));
+
+        // Freestanding office/storage racking for row layouts.
+        put("shelves_office", n -> "shelves".equals(prop(ti, n, "container"))
+                && n.startsWith("furniture_shelving_")
+                && !anyAttach(n));
+
+        // Retail shelving — shops only, so grocery loot stays in grocers.
+        put("shelves_retail", n -> "shelves".equals(prop(ti, n, "container"))
+                && n.startsWith("location_shop_")
+                && !anyAttach(n));
+
+        // Crates, boxes and pallets. Generic wooden ones only: the
+        // location_military_* crates pull military loot and do not belong in
+        // a civilian storeroom.
+        put("crate", n -> named(n, "Crate")
+                && (n.startsWith("carpentry_") || n.startsWith("crafted_")));
+        put("box", n -> named(n, "Box") && n.startsWith("trashcontainers_"));
+        put("pallet", n -> named(n, "Empty Pallet") || named(n, "Pallet"));
+
+        put("locker",     n -> named(n, "Locker"));
+
+        // ---- Office fittings ----
+        put("watercooler", n -> named(n, "Dispenser") && flag(ti, n, "IsLow"));
+
+        // ---- Appliances on surfaces ----
+        put("television", n -> named(n, "Television"));
+
+        // ---- Decor ----
+        put("plant_floor", n -> (named(n, "Snake Plant") || named(n, "Cast Iron Plant"))
+                && flag(ti, n, "IsLow"));
+        put("plant_table", n -> named(n, "Orange Plant") && flag(ti, n, "IsTableTop"));
+        put("rug",         n -> n.startsWith("floors_rugs_") && flag(ti, n, "attachedFloor"));
+    }
+
+    /** True when the tile attaches to any wall edge. */
+    private boolean anyAttach(String n) {
+        return flag(ti, n, "attachedN") || flag(ti, n, "attachedS")
+                || flag(ti, n, "attachedE") || flag(ti, n, "attachedW");
+    }
+
+    /** True when the tile's CustomName matches exactly. */
+    private boolean named(String n, String customName) {
+        return customName.equals(prop(ti, n, "CustomName"));
+    }
+
+    /**
+     * For a 2-tile object with a facing flag, true when this index is the LOW
+     * half of its pair — the index whose immediate predecessor is not also the
+     * same object with the same facing.
+     */
+    private boolean pairLow(String n, String customName, String facingFlag) {
+        String prev = neighbourIndex(n, -1);
+        if (prev == null) return true;
+        return !(customName.equals(prop(ti, prev, "CustomName"))
+                && flag(ti, prev, facingFlag));
+    }
+
+    /** As pairLow but with no facing flag to compare (beds). */
+    private boolean pairLowSimple(String n, String customName) {
+        String prev = neighbourIndex(n, -1);
+        if (prev == null) return true;
+        return !customName.equals(prop(ti, prev, "CustomName"));
+    }
+
+    /** The tile name with its trailing index shifted by delta, or null. */
+    String neighbourIndex(String n, int delta) {
+        int us = n.lastIndexOf('_');
+        if (us < 0) return null;
+        try {
+            int idx = Integer.parseInt(n.substring(us + 1));
+            if (idx + delta < 0) return null;
+            return n.substring(0, us + 1) + (idx + delta);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Collect every sprite-verified, non-overlay tile matching the predicate
+     * into a role group. An empty result is recorded as an empty list rather
+     * than omitted, so a missing role reads as "measured, nothing there"
+     * rather than "never looked".
+     */
+    private void put(String role, Predicate<String> ok) {
+        List<String> found = new ArrayList<>();
+        for (String n : ti.byName.keySet()) {
+            if (ti.isOverlay(n)) continue;
+            if (!sprites.contains(n)) continue;
+            if (!ok.test(n)) continue;
+            found.add(n);
+        }
+        java.util.Collections.sort(found);
+        groups.put(role, found);
+    }
+
+    /**
+     * One line per role with its tile count, and a loud marker on any role
+     * that came back empty — an empty role is a silently skipped object at
+     * placement time, so it needs to be visible before the game is loaded.
+     */
+    private String groupSummary() {
+        StringBuilder sb = new StringBuilder();
+        int empty = 0;
+        for (var e : groups.entrySet()) {
+            if (e.getValue().isEmpty()) empty++;
+            sb.append("\n      ").append(e.getKey()).append('=')
+              .append(e.getValue().size());
+            if (e.getValue().isEmpty()) sb.append("   << EMPTY");
+        }
+        sb.insert(0, groups.size() + " roles, " + empty + " empty");
+        return sb.toString();
     }
 
     private static final String[][] SKIN_PREFIXES = {
@@ -581,6 +854,7 @@ public final class TilePalette {
                 + "\n   shelvesW=" + describe(furnitureShelvesW)
                 + "\n   fridge=" + describe(furnitureFridge)
                 + "\n   wardrobe=" + describe(furnitureWardrobe)
-                + "\n   drawers=" + describe(furnitureDrawers);
+                + "\n   drawers=" + describe(furnitureDrawers)
+                + "\n   furniture groups: " + groupSummary();
     }
 }
