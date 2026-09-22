@@ -133,11 +133,22 @@ public final class GisImport {
         System.out.println("extent: " + g.width + " x " + g.height + " tiles ("
                 + String.format("%.2f", g.width * g.height / 65536.0) + " cells)");
 
-        if (g.width > maxTiles || g.height > maxTiles) {
-            System.out.println("clamping to " + maxTiles + " tiles per side for this pass");
-            g.width = Math.min(g.width, maxTiles);
-            g.height = Math.min(g.height, maxTiles);
-        }
+        // Round up to the next cell boundary (256 tiles) so no content is
+        // clipped at a cell edge. Then cap at the vanilla world bounding box
+        // (78x63 cells = 19968x16128 tiles) so the mod never falls outside
+        // the PZ world grid. The maxTiles parameter is now a hard ceiling,
+        // not a default size — pass Integer.MAX_VALUE to use the vanilla cap only.
+        final int VANILLA_MAX_W = 19968;  // 78 cells * 256
+        final int VANILLA_MAX_H = 16128;  // 63 cells * 256
+        int capW = (maxTiles > 0 && maxTiles < VANILLA_MAX_W) ? maxTiles : VANILLA_MAX_W;
+        int capH = (maxTiles > 0 && maxTiles < VANILLA_MAX_H) ? maxTiles : VANILLA_MAX_H;
+
+        // Round up to next 256-tile cell boundary before capping.
+        g.width  = Math.min(((g.width  + 255) / 256) * 256, capW);
+        g.height = Math.min(((g.height + 255) / 256) * 256, capH);
+        System.out.println("sized to " + g.width + " x " + g.height + " tiles ("
+                + (g.width / 256) + "x" + (g.height / 256) + " cells)"
+                + (g.width == capW || g.height == capH ? " [capped at limit]" : ""));
 
         g.cover = new Cover[g.width][g.height];
         g.occupancy = new String[g.width][g.height];

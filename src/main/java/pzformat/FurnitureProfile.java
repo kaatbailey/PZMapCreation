@@ -42,7 +42,21 @@ public final class FurnitureProfile {
          * Toilet cubicles in a row: each stall one square, divider walls
          * between them, a door on the open side. Measured at McCoy Logging.
          */
-        STALLS
+        STALLS,
+        /**
+         * Pick 1-2 FurnitureSets for this room and tile them across the floor
+         * with density-driven aisle gaps. A perimeter pass still runs for any
+         * activities listed in the profile (wall extras, watercooler, etc.).
+         * See FurniturePlacer.stampLayout().
+         */
+        STAMP,
+        /**
+         * Explicitly authored layout: place named FurnitureSets at specific
+         * positions rather than tiling or zoning. Used for commercial bathrooms
+         * where the exact placement of stall blocks, sink runs, and storage
+         * must be controlled precisely.
+         */
+        AUTHORED
     }
 
     /** Where a satellite sits relative to its anchor. */
@@ -166,38 +180,64 @@ public final class FurnitureProfile {
     public final Activity gridUnit;
     /** How many decor items to attempt, before density scaling. */
     public final int decorBudget;
+    /**
+     * The room-type string passed to FurnitureSet.pickFor() in STAMP layouts.
+     * Null for all non-STAMP strategies.
+     */
+    public final String stampRoomType;
 
     private FurnitureProfile(Strategy strategy, List<Activity> activities,
-                             List<Zone> zones, Activity gridUnit, int decorBudget) {
-        this.strategy = strategy;
-        this.activities = activities;
-        this.zones = zones;
-        this.gridUnit = gridUnit;
-        this.decorBudget = decorBudget;
+                             List<Zone> zones, Activity gridUnit, int decorBudget,
+                             String stampRoomType) {
+        this.strategy      = strategy;
+        this.activities    = activities;
+        this.zones         = zones;
+        this.gridUnit      = gridUnit;
+        this.decorBudget   = decorBudget;
+        this.stampRoomType = stampRoomType;
     }
 
     static FurnitureProfile perimeter(int decor, Activity... acts) {
-        return new FurnitureProfile(Strategy.PERIMETER, List.of(acts), List.of(), null, decor);
+        return new FurnitureProfile(Strategy.PERIMETER, List.of(acts), List.of(), null, decor, null);
     }
 
     static FurnitureProfile grid(Activity unit, int decor, Activity... acts) {
-        return new FurnitureProfile(Strategy.GRID, List.of(acts), List.of(), unit, decor);
+        return new FurnitureProfile(Strategy.GRID, List.of(acts), List.of(), unit, decor, null);
     }
 
     static FurnitureProfile rows(int decor, Activity... acts) {
-        return new FurnitureProfile(Strategy.ROWS, List.of(acts), List.of(), null, decor);
+        return new FurnitureProfile(Strategy.ROWS, List.of(acts), List.of(), null, decor, null);
     }
 
     static FurnitureProfile centre(int decor, Activity... acts) {
-        return new FurnitureProfile(Strategy.CENTRE, List.of(acts), List.of(), null, decor);
+        return new FurnitureProfile(Strategy.CENTRE, List.of(acts), List.of(), null, decor, null);
     }
 
     static FurnitureProfile zoned(int decor, Zone... zs) {
-        return new FurnitureProfile(Strategy.ZONED, List.of(), List.of(zs), null, decor);
+        return new FurnitureProfile(Strategy.ZONED, List.of(), List.of(zs), null, decor, null);
     }
 
     static FurnitureProfile stalls(int decor, Activity... acts) {
-        return new FurnitureProfile(Strategy.STALLS, List.of(acts), List.of(), null, decor);
+        return new FurnitureProfile(Strategy.STALLS, List.of(acts), List.of(), null, decor, null);
+    }
+
+    /**
+     * A room filled by stamping measured vanilla furniture sets across the
+     * floor. Activities are optional perimeter extras (watercooler, shelves,
+     * television) that run after the stamps are placed.
+     */
+    static FurnitureProfile stamp(String roomType, int decor, Activity... acts) {
+        return new FurnitureProfile(Strategy.STAMP, List.of(acts),
+                List.of(), null, decor, roomType);
+    }
+
+    /**
+     * A room whose layout is authored explicitly in FurniturePlacer.authoredLayout().
+     * Activities are perimeter extras placed after the authored pieces.
+     */
+    static FurnitureProfile authored(int decor, Activity... acts) {
+        return new FurnitureProfile(Strategy.AUTHORED, List.of(acts),
+                List.of(), null, decor, null);
     }
 
     // ---------------------------------------------------------------
@@ -221,13 +261,24 @@ public final class FurnitureProfile {
             // A counter RUN, not scattered counters: vanilla kitchens have
             // three to five consecutive counter tiles with the sink set into
             // them and small appliances on top.
+            // Studio — tiny single-room dwelling. Kitchen along one wall,
+            // one chair representing the living area. No subdivision needed.
+            case "studio" -> perimeter(0,
+                    Activity.run("counter", 3,
+                            Satellite.maybe("sink", Rel.ON_TOP, 0.9),
+                            Satellite.maybe("microwave", Rel.ON_TOP, 0.5)),
+                    Activity.of("oven"),
+                    Activity.of("fridge"),
+                    Activity.maybe("chair_soft_N", 0.8),
+                    Activity.maybe("toilet_N", 0.6));
+
             case "kitchen" -> perimeter(2,
                     Activity.run("counter", 4,
                             Satellite.maybe("sink", Rel.ON_TOP, 0.9),
                             Satellite.maybe("microwave", Rel.ON_TOP, 0.5),
                             Satellite.maybe("toaster", Rel.ON_TOP, 0.4),
                             Satellite.maybe("overhead_N", Rel.ABOVE_ON_WALL, 0.7)),
-                    Activity.of("oven"),
+                    Activity.of("oven"),       // domestic oven only
                     Activity.of("fridge"),
                     Activity.maybe("table", 0.4,
                             Satellite.of("chair_dining_N", Rel.IN_FRONT),
@@ -241,18 +292,14 @@ public final class FurnitureProfile {
                     Activity.maybe("fridge", 0.6));
 
             // ---- Breakroom: a small kitchen plus tables ----
-            case "breakroom" -> zoned(2,
-                    new Zone(Strategy.PERIMETER, 0.4, List.of(
-                            Activity.run("counter", 3,
-                                    Satellite.maybe("sink", Rel.ON_TOP, 0.8),
-                                    Satellite.maybe("microwave", Rel.ON_TOP, 0.8)),
-                            Activity.maybe("fridge", 0.8),
-                            Activity.maybe("watercooler", 0.6),
-                            Activity.maybe("television", 0.3))),
-                    new Zone(Strategy.GRID, 0.6, List.of(
-                            Activity.of("table",
-                                    Satellite.of("chair_dining_N", Rel.IN_FRONT),
-                                    Satellite.of("chair_dining_S", Rel.BESIDE)))));
+            case "breakroom" -> stamp("breakroom", 2,
+                    // Guaranteed table+chairs as perimeter fallback when no set fits.
+                    Activity.of("table",
+                            Satellite.of("chair_dining_N", Rel.IN_FRONT),
+                            Satellite.of("chair_dining_S", Rel.BESIDE)),
+                    Activity.maybe("fridge", 0.7),
+                    Activity.maybe("watercooler", 0.5),
+                    Activity.maybe("television", 0.3));
 
             // ---- Office ----
             // Small offices get one desk against a wall. Large ones get the
@@ -261,11 +308,11 @@ public final class FurnitureProfile {
             // sparse and against a wall, which is how a real office reads.
             // Desk is the dominant required object. Shelves are extras that
             // go on the perimeter — one or two, not a wall full of them.
-            case "office" -> grid(
+            case "office" -> stamp("office", 2,
+                    // Guaranteed desk+chair when no set fits. Chair is required (chance=1.0).
                     Activity.of("desk",
                             Satellite.of("chair_office_N", Rel.IN_FRONT),
-                            Satellite.maybe("drawers", Rel.BESIDE, 0.5)),
-                    2,
+                            Satellite.maybe("drawers", Rel.BESIDE, 0.4)),
                     Activity.maybe("shelves_N", 0.3),
                     Activity.maybe("chair_soft_N", 0.2),
                     Activity.maybe("watercooler", 0.3));
@@ -274,12 +321,74 @@ public final class FurnitureProfile {
             // Racking down the middle plus crates and boxes — a storeroom is
             // not just shelving, and the office shelving sheet keeps grocery
             // loot out of it.
-            case "storage", "garagestorage", "armystorage",
-                 "farmstorage", "haystorage" -> rows(0,
+            case "storage", "farmstorage", "haystorage" -> rows(0,
                     Activity.of("shelves_office"),
                     Activity.maybe("crate", 0.8),
                     Activity.maybe("box", 0.6),
                     Activity.maybe("pallet", 0.4));
+
+            // Vanilla residential garages: metal wall shelves + cardboard boxes.
+            // Measured at 4 garage buildings — all small standalone garagestorage rooms.
+            case "garagestorage" -> perimeter(0,
+                    Activity.of("shelves_wall_metal"),
+                    Activity.maybe("shelves_wall_metal", 0.6),
+                    Activity.maybe("workbench", 0.5),
+                    Activity.maybe("crate", 0.7),
+                    Activity.maybe("box", 0.8),
+                    Activity.maybe("shelves_metal", 0.4));
+
+            // Large warehouse / factory floor: heavy free-standing metal racking
+            // in rows, pallets between them. Measured at factory 39x23.
+            case "warehouse", "factory", "grocerystorage" -> rows(0,
+                    Activity.of("shelves_metal"),
+                    Activity.maybe("pallet", 0.9),
+                    Activity.maybe("crate", 0.6),
+                    Activity.maybe("box", 0.5));
+
+            // Storage unit strip mall: small 5x5 self-storage rooms.
+            // Vanilla: wall metal shelves + cardboard boxes.
+            case "storageunit" -> perimeter(0,
+                    Activity.of("shelves_wall_metal"),
+                    Activity.maybe("box", 0.9),
+                    Activity.maybe("crate", 0.6));
+
+            // Car supply / auto parts store.
+            case "carsupply" -> rows(0,
+                    Activity.of("shelves_metal"),
+                    Activity.maybe("crate", 0.5),
+                    Activity.maybe("workbench", 0.4));
+
+            // Army surplus / military shop. Measured: large shop shelves on walls,
+            // military lockers and crates mid-floor, clothes racks.
+            case "armystorage", "armysurplus" -> zoned(1,
+                    new Zone(Strategy.ROWS, 0.6, List.of(
+                            Activity.of("shelves_retail"),
+                            Activity.maybe("locker_military", 0.7))),
+                    new Zone(Strategy.PERIMETER, 0.4, List.of(
+                            Activity.of("counter",
+                                    Satellite.of("chair_office_N", Rel.IN_FRONT)),
+                            Activity.maybe("crate_military", 0.8),
+                            Activity.maybe("locker_military", 0.6))));
+
+            // Gun store. Measured: glass/dark display counters along the walls
+            // forming a U, magazine stand and wall shelves at the front.
+            case "gunstore" -> zoned(1,
+                    new Zone(Strategy.PERIMETER, 0.7, List.of(
+                            Activity.run("counter", 3))),
+                    new Zone(Strategy.ROWS, 0.3, List.of(
+                            Activity.of("shelves_retail"),
+                            Activity.maybe("locker_military", 0.4))));
+
+            // Grocery store. Measured: fridges along the back wall, retail
+            // shelving in rows, display stands mid-floor, checkout counter near exit.
+            case "grocery", "gas2go" -> zoned(1,
+                    new Zone(Strategy.ROWS, 0.65, List.of(
+                            Activity.of("shelves_retail"),
+                            Activity.maybe("display_stand", 0.5))),
+                    new Zone(Strategy.PERIMETER, 0.35, List.of(
+                            Activity.of("fridge"),
+                            Activity.maybe("fridge", 0.7),
+                            Activity.run("counter", 2))));
 
             case "shop", "electronicsstore", "tobaccostore", "toolstore" -> zoned(1,
                     new Zone(Strategy.ROWS, 0.7, List.of(
@@ -304,6 +413,7 @@ public final class FurnitureProfile {
                     Activity.of("bed_home",
                             Satellite.maybe("drawers", Rel.BESIDE, 0.8)),
                     Activity.maybe("wardrobe", 0.7),
+                    Activity.maybe("toilet_N", 0.4),
                     Activity.maybe("chair_dining_E", 0.2));
 
             case "diningroom" -> centre(3,
@@ -324,21 +434,10 @@ public final class FurnitureProfile {
             // Residential: toilet + bath + sink on counter.
             // Sink is IsTableTop and must go ON_TOP of a counter in both cases.
             case "bathroom" -> commercial
-                    ? zoned(0,
-                        new Zone(Strategy.PERIMETER, 0.45, List.of(
-                                // Counter run with sinks set into the top and
-                                // mirrors on the wall above — the vanilla
-                                // arrangement at McCoy Logging.
-                                Activity.of("counter",
-                                        Satellite.of("sink", Rel.ON_TOP),
-                                        Satellite.maybe("mirror_N",
-                                                Rel.ABOVE_ON_WALL, 0.9)),
-                                Activity.maybe("blower_N", 0.7),
-                                Activity.maybe("bin", 0.8))),
-                        new Zone(Strategy.STALLS, 0.55, List.of(
-                                // Anchor role is ignored by stalls() — it always
-                                // uses stall_toilet from fixtures_bathroom_02.
-                                Activity.of("toilet_N"))))
+                    ? authored(0,
+                        // Perimeter extras after the authored pieces are placed.
+                        Activity.maybe("blower_N", 0.6),
+                        Activity.maybe("bin", 0.8))
                     : perimeter(1,
                         Activity.of("toilet_N"),
                         Activity.of("counter",
@@ -356,27 +455,43 @@ public final class FurnitureProfile {
                             Activity.of("shower"))));
 
             // ---- Public and institutional ----
-            case "lobby" -> perimeter(4,
-                    Activity.maybe("couch_S", 0.7),
+            // Halls get minimal perimeter furniture so they feel like corridors.
+            // A completely empty hall reads as a bug; a bench and a bin reads as intentional.
+            case "hall" -> perimeter(1,
+                    Activity.maybe("bench", 0.7),
+                    Activity.maybe("bin", 0.5),
+                    Activity.maybe("plant_floor", 0.4));
+
+            case "lobby" -> perimeter(3,
+                    // At least one couch is required — a lobby with only plants is not a lobby.
+                    Activity.of("couch_S",
+                            Satellite.maybe("table", Rel.IN_FRONT, 0.6)),
                     Activity.maybe("chair_soft_E", 0.6),
-                    Activity.maybe("table", 0.5,
-                            Satellite.of("chair_soft_N", Rel.IN_FRONT),
-                            Satellite.of("chair_soft_S", Rel.BESIDE)),
+                    Activity.maybe("chair_soft_E", 0.5),
                     Activity.maybe("watercooler", 0.5));
 
             case "school" -> grid(
                     Activity.of("desk",
-                            Satellite.of("chair_dining_N", Rel.IN_FRONT)),
+                            Satellite.of("chair_dining_N", Rel.IN_FRONT)),   // required
                     1,
                     Activity.maybe("shelves_N", 0.6));
 
-            case "church" -> rows(1,
-                    Activity.of("bench"));
+            // Church. Measured: rows of Dark Wooden Chairs facing N (the altar),
+            // lectern stand at the front, nothing else. The altar tiles are
+            // part of the building structure (church_small_01_93-95), not furniture.
+            case "church" -> rows(2,
+                    Activity.of("chair_pew_N"),
+                    Activity.maybe("lectern", 0.9));
 
-            case "medical" -> perimeter(1,
-                    Activity.of("shelves_N"),
-                    Activity.of("bed"),
-                    Activity.maybe("sink", 0.6));
+            // Hospital room. Measured: Large Medical Beds along the north wall,
+            // mobile tool counters and IV/bloodbag stands beside each bed,
+            // drawers at the head of each bed. medclinic is smaller (exam room).
+            case "hospitalroom", "medclinic", "medical" -> perimeter(1,
+                    Activity.of("bed_medical",
+                            Satellite.maybe("drawers", Rel.BESIDE, 0.8)),
+                    Activity.maybe("shelves_N", 0.5),
+                    Activity.maybe("sink", 0.7),
+                    Activity.maybe("bin", 0.6));
 
             case "archive" -> rows(0,
                     Activity.of("shelves_office"),
@@ -384,7 +499,8 @@ public final class FurnitureProfile {
 
             case "security", "police" -> perimeter(1,
                     Activity.of("desk",
-                            Satellite.of("chair_office_N", Rel.IN_FRONT)),
+                            Satellite.of("chair_office_N", Rel.IN_FRONT),    // required
+                            Satellite.maybe("drawers", Rel.BESIDE, 0.5)),
                     Activity.maybe("locker", 0.7));
 
             case "laundry" -> perimeter(0,
@@ -395,7 +511,24 @@ public final class FurnitureProfile {
                     Activity.maybe("crate", 0.7),
                     Activity.maybe("pallet", 0.5));
 
-            // Halls, closets, cemeteries and anything unlisted stay empty.
+            // Janitor closet — tiny utility room. Shelves on a wall, bin, crate.
+            case "janitor" -> perimeter(0,
+                    Activity.of("shelves_wall_metal"),
+                    Activity.maybe("bin", 0.9),
+                    Activity.maybe("crate", 0.6));
+
+            // Shed — small outbuilding. Like a mini garagestorage.
+            case "shed" -> perimeter(0,
+                    Activity.of("shelves_wall_metal"),
+                    Activity.maybe("workbench", 0.5),
+                    Activity.maybe("crate", 0.7),
+                    Activity.maybe("box", 0.6));
+
+            // Closet — tiny residential room. Wardrobe only.
+            case "closet" -> perimeter(0,
+                    Activity.of("wardrobe"));
+
+            // Closets, cemeteries and anything unlisted stay empty.
             default -> null;
         };
     }

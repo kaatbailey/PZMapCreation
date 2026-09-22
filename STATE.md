@@ -15,38 +15,81 @@ set GISMAP ~/Zomboid/mods/PZGisImport/common/media/maps/PZGisImport
 set MAPS "$PZ/media/maps/Muldraugh, KY"
 
 # Compile
+cd ~/Documents/PZMapCreation
 rm -rf out && mkdir out
 javac -encoding UTF-8 -d out (find src/main/java -name '*.java')
 
-# Generate mod
+# Generate mod (the working command)
+# 0 = auto-size from area boundary (rounds up to next cell boundary, capped at vanilla world max)
+# 200 200 = world origin cell X, Y — use placement.html to find correct coords
 java -cp out pzformat.Probe giscells \
     ~/pzgis/buildings.geojson ~/pzgis/roads.geojson ~/pzgis/area.geojson \
-    "$PZ/media" ~/Zomboid/mods PZGisImport 2048 <cellX> <cellY>
+    "$PZ/media" ~/Zomboid/mods PZGisImport 0 200 200 2>&1 | grep -e "EMPTY" -e "roles," -e "stall_toilet" -e "stall_wall"
 
 # Inspect a square
 java -cp out pzformat.Probe square "$PZ/media" "$MAPS" <cell> <x> <y> 0
 
 # Find tiles by CustomName
-java -cp out pzformat.PaletteScan "$PZ/media" --find "<Name>"
+java -cp out pzformat.PaletteScan "$PZ/media" --find "<n>"
 
 # Scan a tileset
 java -cp out pzformat.PaletteScan "$PZ/media" <prefix>
 
-# Placement tool (needs venv)
+# Scan furniture sets from world coordinates (outputs to file)
+# Replace coords and output file as needed
+set coords "12924,2044" "12785,1715"   # add more as needed
+set out ~/Downloads/office_sets.txt
+echo "" > $out
+
+for coord in $coords
+    set parts (string split "," $coord)
+    set x $parts[1]
+    set y $parts[2]
+    set cx (math --scale=0 "$x / 256")
+    set cy (math --scale=0 "$y / 256")
+    set lx (math "$x - ($cx * 256)")
+    set ly (math "$y - ($cy * 256)")
+    set cell {$cx}_{$cy}
+    echo "=== COORD $x,$y  CELL $cell  LOCAL $lx,$ly ===" >> $out
+    for dx in -3 -2 -1 0 1 2 3
+        for dy in -3 -2 -1 0 1 2 3
+            set sx (math "$lx + $dx")
+            set sy (math "$ly + $dy")
+            set r (java -cp out pzformat.Probe square "$PZ/media" "$MAPS" $cell $sx $sy 0 2>/dev/null)
+            if string match -q "*OBJECT*" $r; or string match -q "*DOOR*" $r
+                echo "  offset($dx,$dy):" >> $out
+                echo $r | command grep -e "CustomName" >> $out
+                echo $r | command grep -e "classified" | head -1 >> $out
+            end
+        end
+    end
+    echo "" >> $out
+end
+echo "done"
 cd ~/Documents/PZMapCreation/pzmap2dzi
 source .venv/bin/activate.fish
 rm -rf ~/Documents/PZMapCreation/map-output/html/map_data/mod_maps/PZGisImport
-time python main.py render base_top PZGisImport   # ~2 seconds, safe to run
-# DO NOT run: python main.py render base           # 167 minutes, one-time done
+time python main.py render base_top PZGisImport   # ~seconds, safe to run
+# View mod map only:      http://localhost:8880/modmap.html
+# Place on vanilla map:   http://localhost:8880/placement.html
+# Vanilla top-down map:   http://localhost:8880/pzmap.html?map_type=top
 cd ~/Documents/PZMapCreation/map-output/html && python server.py
-# Map viewer: http://localhost:8880/pzmap.html?map_type=top   (fast, ground only)
-# Full isometric: http://localhost:8880/pzmap.html            (base render, done once)
 ```
 
 Shell is fish. `grep` is aliased — use `command grep` with `-e` per pattern.
-`$GISMAP`, `$PZ`, `$MAPS` die between sessions — set them every time.
-In-game tests need a NEW GAME, not a resumed save.
-Server.py requires the pzmap2dzi virtualenv.
+In-game tests need a NEW GAME, not a resumed save. Pick PZGisImport from the location list.
+Cell size is **256 tiles**, not 300. Scan scripts divide by 256.
+
+---
+
+## 0a. Standing rules (always follow)
+
+- **Never ask the user to cut and paste code or make edits manually.**
+  Deliver all changes as complete replacement files. User uploads original;
+  Claude modifies and returns the full file.
+- **Always give the exact fish command** for any build, run, scan, or tool
+  invocation. Never describe — write it out ready to run.
+- **Before chasing a subsidiary bug**, name the tradeoff and let the user decide.
 
 ---
 
@@ -56,208 +99,238 @@ A GIS-to-playable-PZ-map pipeline. User supplies GeoJSON (buildings, roads,
 area boundary). Pipeline generates a loadable B42 mod with correct rooms,
 walls, doors, windows, furniture, ground blending, and biome coverage.
 
-**End-to-end status: working. Loot verified in game. Furniture placing.**
-
-C++ port (PZMapMaker) is at parity on the format layer but does NOT have
-GisCells, BuildingClass, BuildingPlan, FurniturePlacer, or the furniture
-profiles. Java is the laboratory; C++ is the eventual product.
+**End-to-end status: working. Loot verified in game.**
 
 ---
 
 ## 2. What the code does — confirmed
 
 ### Format layer
-- `.lotheader`, `.lotpack`, `.pack`, `.tiles` binary/text: 4065/4065 cells
-  byte-identical round-trip verified against vanilla.
+`.lotheader`, `.lotpack`, `.pack`, `.tiles` — 4065/4065 cells byte-identical
+round-trip verified against vanilla.
 
 ### GIS pipeline (GisCells.java)
-- Roads, ground, dither blending, tufts, biome map, spawn points, chunkdata.
-- Buildings from GIS footprints with 4 wall skins (seeded RNG).
-- Room subdivision via BuildingPlan: typed rooms written into lotheader.
-- Non-residential room recipes via BuildingPlan.recipe(primOcc).
-- Interior walls + spanning-tree doors + door objects.
-- Exterior door openings + frame + door object.
-- Windows on exterior walls (WindowN/W wall + object), spaced, skip corners/doors.
-- carveWindows() now returns Set<String> windowSquares for decor use.
-- Roof type by BuildingClass: FLAT_ROOF → ceiling only; RESIDENTIAL → pitched.
-- FurniturePlacer.place() called per building with doorSquares + windowSquares.
+Roads, ground, dither blending, tufts, biome map, spawn points, chunkdata.
+Buildings from GIS footprints. Room subdivision via BuildingPlan. Interior
+walls, spanning-tree doors, exterior doors/windows. Roof by BuildingClass.
+FurniturePlacer.place() called per building.
 
-### Furniture system (2026-09-20, session 2)
-Three files: TilePalette.java (discovery), FurnitureProfile.java (what goes
-where), FurniturePlacer.java (algorithm).
+### GisImport.java — auto-sizing (FIXED session 5)
+The `maxTiles` parameter is now a true ceiling, not a default size. Pass `0`
+to auto-size from the area boundary. The pipeline:
+1. Computes extent from area.geojson boundary
+2. Rounds up to next 256-tile cell boundary
+3. Caps at vanilla world max (19968×16128 tiles)
+Previously, passing `2048` was silently clamping the map to the top-left
+2048×2048 corner, dropping ~95% of buildings and roads.
 
-**TilePalette.groups** — 67 roles, all non-empty after last session:
-- chair_N/S/E/W (all sheets), chair_office_N/S/E/W (furniture_seating_indoor_02/03),
-  chair_dining_N/S/E/W (carpentry_01), chair_soft_N/S/E/W (furniture_seating_indoor_01)
-- couch_N/S/E/W (pair-low), bed (pair-low), bed_home (furniture_bedding_01 only)
-- desk (container=desk), table (IsTable), counter (container=counter)
-- sink (Material=Plumbing only — excludes MetalPlates industrial sink)
-- fridge, oven (appliances_cooking_01), oven_ind (crafted_05)
-- microwave, toaster (IsTableTop — ON_TOP of counter)
-- overhead_N/S/E/W (Cabinet, IsHigh, wall-mounted)
-- toilet_N/S/E/W (fixtures_bathroom_01, attached variants)
-- stall_wall_N/W, stall_doorwall_N/W, stall_door_N/W (fixtures_bathroom_02)
-- stall_toilet (fixtures_bathroom_02 _4/_5, no attach flag, pair-low)
-- shower (waterPiped), bath (not IsGridExtensionTile)
-- blower_N/S/E/W, urinal_N/W/S, mirror_N/W
-- shelves_N/S/E/W (furniture_shelving_01, attached — wall shelves)
-- shelves_office (furniture_shelving_01, freestanding — office/storage)
-- shelves_retail (location_shop_*, freestanding — shops only)
-- locker, watercooler (Dispenser, IsLow), television (IsTableTop)
-- crate (carpentry_01/crafted_05), box (trashcontainers_01), pallet
-- plant_floor (Snake/Cast Iron Plant, IsLow), plant_table (Orange Plant, IsTableTop)
-- rug (floors_rugs_01, FLOOR layer), bin (container=bin)
-- drawers (container=sidetable), wardrobe
+### Roofs — MAX_PITCH_SPAN (FIXED session 5, interim)
+`roofs_30_02` has only 6 slope steps per face (near `_0.._5`, far `_29.._24`;
+`_6 _7 _22 _23` do not exist). A pitched roof peaks at step (span-1)/2, so any
+building wider than 12 tiles on its short side ran off the sheet — missing
+steps fell back to ceiling-only (the brown strip along the ridge). ~half of
+the Whitefish buildings were affected. Interim fix: `MAX_PITCH_SPAN = 12` in
+GisCells — wider buildings get the flat-roof path; gables skipped for them.
+Generator prints `roofs: N pitched, N flat (too wide), N flat (class)`.
+Follow-up: measure a wide vanilla pitched house to see how the slope
+continues onto z=2, then replace the flat fallback with a two-level roof.
 
-**Per-room palette lock**: one tile family per role locked at room start,
-~20% drift. All shelves in a room come from one sheet/colour family.
+### Spawn points (FIXED session 5)
+`spawnpoints.lua` uses the LEGACY 300-tile grid: `worldX = tileX / 300`,
+`posX = tileX % 300` (same for Y). NOT 256. The generator already did this;
+hand-written entries using 256 put you in the woods.
+`modmap.html` now has a spawn picker: click road squares to drop up to 20 pins,
+right-click to remove, "Generate spawnpoints.lua" gives paste-ready Lua.
+Paste over `$GISMAP/spawnpoints.lua` — no regenerate needed. New game required.
+Note: regenerating the mod OVERWRITES spawnpoints.lua with auto spawns.
 
-**Approachability invariant**: every interactive object checks the square it
-faces is free before placement. WALL_ATTACHED role set checks opposite
-direction (shelf on north wall checks south, toward the room).
+### Vanilla room scanner — RoomScan.java (NEW session 5)
+One JVM, whole-room scans (all rects), ASCII layout grid + legend + objects with
+offsets/edges/Facing. Input `rooms.txt`: plain header lines, then
+`x:..,y:..,layer:..` lines. A header containing `[building]` scans every room of
+that building. Misses (point on a wall line) fall back to a radius scan.
+```fish
+java -Xmx4g -cp out pzformat.RoomScan "$PZ/media" "$MAPS" rooms.txt > ~/Downloads/room_scans.txt
+```
+Findings: vanilla has no `kidsbedroom` (kids rooms are 4x4 `bedroom`s);
+residential garages are one-room `garagestorage` buildings; gas station shop
+is `gas2go`. 10 coordinates missed a room (all residential bathrooms, both
+commercial kitchens, library) — rescan needed with nudged coordinates.
 
-**Strategies**: PERIMETER (fills full wall with required activities),
-GRID (perimeter first, then clusters in centre for rooms ≥ 8×8),
-ROWS (alternating facing so rows never face each other's backs),
-CENTRE, ZONED, STALLS (fixtures_bathroom_02 plastic stall kit).
+### Furniture system — SESSION 3–4 STATUS
 
-**Density tiers**: SPARSE/NORMAL/DENSE rolled per building, jittered ±1 per
-room. Affects grid unit size, aisle width, row gap, skip probability.
+**Four core files:**
 
-**Decor pass**: plants near windows (radius 3, fallback to any free),
-rugs on open floor (FLOOR layer, no occupancy), tabletop plants on SURFACE squares.
+| File | Role |
+|---|---|
+| `TilePalette.java` | Tile group discovery (67 roles). `oven_ind` removed — boilers no longer appear. |
+| `FurnitureProfile.java` | Room profiles and strategies. Strategies: PERIMETER, GRID, ROWS, CENTRE, ZONED, STALLS, STAMP, AUTHORED. |
+| `FurniturePlacer.java` | Placement algorithm. Required satellites (chance=1.0) now bypass density scaling — desks always get chairs. Paired objects (couch, bed) now place extension tile automatically — no more half-couches. |
+| `FurnitureSet.java` | 25 vanilla-measured set templates (Sets A–Y). `BATHROOM_STALL_BLOCK_N` and `_W` authored sets exist for reference but toilet placement is handled by `stalls()` in `authoredLayout()`. |
 
----
+**Strategy routing:**
+- `office` → STAMP("office") with desk+chair perimeter fallback
+- `breakroom` → STAMP("breakroom") with table+chair perimeter fallback
+- `bathroom` commercial → AUTHORED (see below)
+- `bathroom` residential → PERIMETER (toilet + counter + sink + bath)
+- `hall` → PERIMETER (bench, bin, plant)
+- All others → unchanged from session 2
 
-## 3. NEXT TASK — Set-based furniture (the main thing)
+**STAMP strategy**: picks 1–2 FurnitureSets for the room, tiles them across
+the floor with density-driven aisle gaps. Wall-run sets (counter, kitchen wall,
+vending) are flagged `.wallRun()` and placed along one wall instead.
 
-### What's wrong with the current approach
+**AUTHORED strategy — commercial bathroom (CONFIRMED WORKING):**
+1. `stalls()` called directly — proven code places plastic stall toilets
+   (`fixtures_bathroom_02_4`) with dividers + doorwall + door all stacked
+   on the correct floor square. Runs along longest wall automatically.
+2. Hanging sinks on opposite wall:
+   - Wide room (rw≥rh): `fixtures_sinks_01_30` FacingN on S wall,
+     mirror `fixtures_bathroom_01_28` on S wall square above each sink.
+   - Tall room (rh>rw): `fixtures_sinks_01_31` FacingW on E wall,
+     mirror `fixtures_bathroom_01_29` on E wall square beside each sink.
+3. Bin (`trashcontainers_01_20`) + water dispenser in SE corner.
+4. Blower from perimeter activities.
 
-The activity-based system produces incoherent rooms: tables without chairs,
-shelves scattered randomly, no visual identity per room. The root cause is
-that each object is placed independently. A room needs to be ONE or TWO
-recognizable arrangements stamped repeatedly, not a random selection.
+**Key lessons from bathroom debugging:**
+- Stall wall tiles (`_02_0`, `_02_1`, `_02_10`, `_02_11`) are wall-layer tiles.
+  Stacking them via `appendTile` on a floor square causes floating geometry.
+  The ONLY way to place them correctly is through `stalls()` which uses
+  `pal.pickFrom("stall_doorwall_N")` etc. — those flags route to the correct
+  PZ rendering layer.
+- For N-wall stalls: toilet = `_01_0` (attachedN, FacingS).
+  For W-wall stalls: toilet = `_01_1` (attachedW, FacingE).
+- Do NOT try to replicate `stalls()` with raw tile indices.
 
-### The set-based approach (agreed this session)
-
-A **FurnitureSet** is a small template of objects at relative offsets,
-extracted directly from vanilla measurements. A room picks 1-2 set types
-and stamps them repeatedly across available floor. This is how vanilla rooms
-were actually made.
-
-### Measured sets from office_sets.txt (2026-09-20)
-
-All sets extracted from vanilla scan at coordinates given. Tile names and
-relative offsets (dx, dy) from scan origin:
-
-**SET A — Conference table** (coord 12924,2044, cell 50_7)
-A long table (furniture_tables_high_01_17/18 alternating in a column at dx=+1)
-with chairs on both sides (furniture_seating_indoor_01_48/49/50/51).
-Layout: column of table tiles at x+1, chairs at x+0 and x+2, runs 6 rows.
-Bounding box: 3 wide × 6 tall.
-
-**SET B — L-desk workstation** (coord 12785,1715)
-location_business_office_generic_01_40/41/42/43 form an L-shaped desk.
-Chair at furniture_seating_indoor_01_52/55 beside it.
-Extended desk parts _136-140 for the long arm.
-Bounding box: ~4×4.
-
-**SET C — Cubicle with dividers** (coord 12773,1715)
-location_business_office_generic_01_44-47 are partition/divider walls.
-Desk _18/19 inside. Chair _51/53 beside.
-Bounding box: ~4×4.
-
-**SET D — Single desk + chair** (coord 12788,1699)
-location_business_office_generic_01_33 (desk, 2 tiles at dx=0,dy=-1 and dy=0).
-furniture_seating_indoor_03_58/59 (chair, 2 tiles).
-furniture_tables_high_01_30/31 (side table).
-Bounding box: ~4×4.
-
-**SET E — Desk + lamp + filing** (coord 12820,1694)
-location_business_office_generic_01_42/43/15 (desk parts).
-furniture_storage_02_2 (filing cabinet above).
-furniture_seating_indoor_01_49 (chair).
-location_community_school_01_16/17 (lamp, 2-tile).
-Bounding box: ~3×5.
-
-**SET F — Desk row with computers** (coord 12783,1626)
-location_business_office_generic_01_40/41/42/43/44/45 (desk components).
-furniture_seating_indoor_01_48/49/50 (chairs).
-location_shop_mall_01_4 (monitor/computer on desk).
-Bounding box: ~6×6 (two back-to-back desks).
-
-**SET G — Office with partition walls** (coord 12772,1535)
-location_business_office_generic_01_18/19/44/45/46 (desk + partitions).
-furniture_seating_indoor_01_50 (chair).
-Bounding box: ~6×4.
-
-**SET H — Back-to-back library shelves** (coord 12568,1471)
-furniture_shelving_01_44 (Facing S) paired with _47 (Facing N) one row apart.
-Repeating columns: _47 at dy=-2, _44 at dy=-1, across dx=0..3.
-This is the standard library/storage row arrangement.
-Bounding box: 4 wide × 2 tall per unit, repeat with 1-tile aisle.
-
-### Implementation plan
-
-1. **FurnitureSet.java** — a new file. Each set is a `List<Tile>` where
-   `Tile` is `(int dx, int dy, String tileName)`. Sets are static constants.
-   A set knows its bounding box (w, h) for stamping logic.
-
-2. **Replace gridLayout in FurniturePlacer** — instead of placing individual
-   desk anchors with satellites, pick 1-2 sets appropriate for the room type
-   and stamp them repeatedly across the floor with aisle gaps between stamps.
-   Density tier controls aisle width and skip probability as before.
-
-3. **Room type → set selection**:
-   - office (large) → SET F or SET C (cubicles) repeated
-   - office (small) → SET D or SET E (single desk) 1-2 times
-   - conference/lobby → SET A (conference table) once or twice
-   - library/archive → SET H (back-to-back shelves) repeated
-   - storage → rows of shelves_office + crates scattered
-
-4. **Accents remain activity-based**: plants, rugs, water cooler, bin.
-   These are sparse and don't need set logic.
+**Per-room palette lock**: one tile family per role locked at room start.
+**Approachability invariant**: every interactive object checks approach square.
+**Density tiers**: SPARSE/NORMAL/DENSE rolled per building.
+**Decor pass**: plants near windows, rugs on open floor, tabletop plants.
+**Paired objects**: `put()` auto-places extension tile for couch/bed roles.
 
 ---
 
-## 4. Known bugs going into next session
+## 3. NEXT TASK — Fill empty rooms (room type profiles)
 
-**Toilets face wrong way** — stall_toilet from fixtures_bathroom_02 indices
-_4/_5 are a pair. We always pick the low index (_4). The visual orientation
-depends on which index is used and which wall the stall runs against. Not yet
-fixed. Toilets render facing into the stall wall rather than toward the door.
+### The problem
+Several room types assigned by BuildingPlan fall to `default -> null` in
+`FurnitureProfile.forRoom()`, producing completely empty rooms. These are
+the large blank rooms seen throughout the map.
 
-**Zero sinks in commercial bathrooms** — the sink/counter zone in the ZONED
-commercial bathroom is barely firing. Large rooms have the stall zone dominate.
-Needs the sink run to be a required activity in a properly sized zone.
+### Room types with NO profile (produce empty rooms)
 
-**Large empty rooms** — buildings whose single room is large (>30×20) and
-classified as FLAT_ROOF still get mostly empty floors. The set-based approach
-is the fix; perimeter alone can't fill a large room.
+| Type | Appears in | Suggested approach |
+|---|---|---|
+| `hall` | offices, schools, hospitals — corridor between rooms | DONE: minimal PERIMETER (bench, bin, plant). May need tuning. |
+| `garage` | residential buildings | PERIMETER: workbench, locker, shelves, crate, maybe old car clutter |
+| `garagestorage` | commercial warehouses, farms, garages | ROWS: heavy shelves, crates, pallets — same as `storage` but denser |
+| `janitor` | offices, schools, hospitals — small utility closet | PERIMETER: mop bucket, shelves, cleaning supplies (bin, crate) |
+| `kidsbedroom` | residential | PERIMETER: small bed, drawers, toy shelves — same as `bedroom` but lighter |
+| `shed` | farms, residential backyards | ROWS: shelves, crates, maybe workbench |
+| `closet` | residential — tiny room | PERIMETER: wardrobe only (room too small for anything else) |
+| `cemetary` | church buildings | PERIMETER: nothing useful — `default -> null` is correct |
+| `empty` | explicitly blank placeholder | `default -> null` correct — leave empty |
 
-**Tables without chairs (still appearing)** — satellite probability scaling
-by density still produces tables alone at SPARSE density. Fix: chair satellite
-on table should be chance=1.0 unconditionally, not scaled by density.
+### Priority order
+1. `garage` — appears in residential, large visible room
+2. `garagestorage` — appears in warehouses, very large blank rooms
+3. `kidsbedroom` — easy, clone of bedroom with minor tweaks
+4. `janitor` — small but visually odd when empty
+5. `shed` — small, same as garagestorage at smaller scale
+6. `closet` — trivial one-liner
 
-**boiler/woodstove appearing in breakrooms** — oven_ind (crafted_05) is
-resolving in some rooms that should only get domestic appliances. The building
-class check (commercial vs residential) needs to gate oven_ind strictly to
-restaurant/cafeteriakitchen rooms, not bleed into breakrooms.
+### Room types with thin profiles that may need improvement
+
+| Type | Current profile | Issue |
+|---|---|---|
+| `hall` | bench + bin + plant | May produce too much furniture in wide halls |
+| `storage` | rows of shelves_office | `shelves_office` may be wrong type — should be heavy industrial shelves |
+| `shop` | ZONED rows+counter | Verify shelves_retail is filling the floor |
+| `medical` | PERIMETER bed+counter+sink | Verify bed+gurney is appearing; may need exam table role |
+| `school` | GRID desk+chair | Verify chalkboard and shelves are appearing beside desks |
+| `church` | (check current state) | Should have pews, altar — needs vanilla measurement |
+
+### How to add a new profile
+In `FurnitureProfile.java`, add a `case "typename" ->` inside `forRoom()`.
+Use `perimeter()`, `rows()`, `grid()`, or `stamp()` factory. Use `Activity.of()`
+for required items and `Activity.maybe()` for optional ones.
+
+Example for `garage`:
+```java
+case "garage" -> perimeter(1,
+        Activity.of("workbench",
+                Satellite.maybe("shelves_N", Rel.BESIDE, 0.6)),
+        Activity.maybe("locker", 0.7),
+        Activity.maybe("crate", 0.8),
+        Activity.maybe("bin", 0.5));
+```
+
+No new FurnitureSet tiles needed for most of these — all roles already exist
+in TilePalette (workbench, locker, crate, shelves_office, wardrobe, bin).
+`garagestorage` and `shed` can reuse `LIBRARY_SHELVES` set or just use
+`rows(Activity.of("shelves_office"), Activity.maybe("crate", 0.8))`.
+
+---
+
+## 4. Known bugs deferred
+
+Full list as of session 5, roughly by visual impact:
+
+**Roof**
+1. Wide buildings (>12 tiles) get flat roofs as an interim — proper two-level
+   pitched roof needs a vanilla measurement (see section 2).
+2. Gable ends on north-south ridges not measured — those stay open.
+
+**Paired objects**
+3. Bed extension tile goes the wrong direction — half beds.
+4. Couch extension tile wrong on some orientations — halves don't line up.
+
+**Placement**
+5. Small rooms (~4x4 and under) overcrowd — placer needs a size-based cap on activities.
+6. Commercial (AUTHORED) bathroom fires in small flat-roof buildings —
+   `commercial = bc == FLAT_ROOF` needs a footprint-size check.
+7. Stamps: only office/breakroom use STAMP; residential rooms still PERIMETER.
+   Vanilla scan data is in hand for livingroom/bedroom/kitchen to build stamps.
+
+**Building generation**
+8. Some buildings sit on road centerlines — GIS source data, not pipeline.
+9. Some buildings read as one open room / jumbled room assignment.
+10. BuildingPlan self-test failing on 40x20 footprints — not investigated.
+
+**Cosmetic**
+
+- **Wall clocks floating** — some sets have `wallN` clock tiles that render
+  above the room in isometric view due to PZ's isometric angle. The clock IS
+  on the wall; this is a PZ rendering quirk. Low priority cosmetic issue.
+- **Couch variety** — lobby/livingroom couches are whole but vary randomly in
+  colour and style per room, giving a mismatched showroom look. Needs palette
+  locking to apply to paired objects. Medium priority.
+- **BuildingPlan self-test failing on 40×20 footprints** — not investigated.
+- **`stalls()` places plastic stall toilets (`_02_4`)** not white porcelain
+  (`_01_0`). The plastic ones look fine; this is cosmetic. Low priority.
 
 ---
 
 ## 5. Decisions made
 
-- **Set-based furniture is next.** Extract vanilla templates, stamp repeatedly.
-- **base render done once** (167 min). Never re-render. View at pzmap.html.
-- **base_top render** (~2 sec) is safe to run after each generation.
-- **Java = laboratory, C++ = product.** Port proven passes after stability.
-- **Furniture at ry+1 / rx+1 confirmed correct** from vanilla kitchen scan.
-- **Per-room palette lock** keeps rooms visually coherent (one shelf family).
-- **WALL_ATTACHED role set** routes approach check to opposite direction.
-- **fixtures_bathroom_02** is the complete plastic stall kit (not _01).
-- **Industrial sink** = Material=MetalPlates in fixtures_sinks_01_32-35, excluded.
-- **Urinals are NOT in stalls** — stall_toilet uses fixtures_bathroom_02 exclusively.
+- **No manual code edits** — all changes as complete replacement files.
+- **Always give exact fish commands** for builds/runs.
+- **Cell size = 256 tiles.** Scan scripts divide by 256.
+- **`oven_ind` removed from TilePalette** — boilers/smokers gone from all rooms.
+- **`stalls()` is the only correct way to place stall tiles** — do not replicate
+  with raw `_02_*` indices via stampSet; they render as floating geometry.
+- **Required satellites bypass density scaling** — `Satellite.of()` always places.
+- **Paired objects (couch, bed) auto-extend** — `put()` places extension tile.
+- **Wall-run sets marked `.wallRun()`** — placed along one wall, not tiled floor.
+- **AUTHORED strategy** used for commercial bathrooms only.
+- **base render done once** (167 min). Never re-render base.
+- **base_top PZGisImport render** (~seconds) safe to run after each generation.
+- **Java = laboratory, C++ = product.** Port after stability.
+- **MAX_PITCH_SPAN = 12** — wider buildings get flat roofs until two-level roofs are measured.
+- **spawnpoints.lua uses the 300-tile legacy grid**, never 256. modmap.html spawn picker uses /300 and %300.
+- **Files go directly into src/main/java/pzformat/** — never copy from Downloads.
+- **maxTiles = 0** — auto-sizes from area boundary. Never pass a hardcoded tile
+  count; it will clip the map silently.
 
 ---
 
@@ -266,88 +339,84 @@ restaurant/cafeteriakitchen rooms, not bleed into breakrooms.
 | File | Purpose |
 |---|---|
 | `src/main/java/pzformat/GisCells.java` | Pipeline orchestrator |
+| `src/main/java/pzformat/GisImport.java` | Rasteriser + auto-sizing from area boundary |
 | `src/main/java/pzformat/BuildingPlan.java` | Room recipes by OCC_CLS/primOcc |
 | `src/main/java/pzformat/BuildingClass.java` | FLAT_ROOF / RESIDENTIAL / etc |
 | `src/main/java/pzformat/FurnitureProfile.java` | Room profiles and strategies |
 | `src/main/java/pzformat/FurniturePlacer.java` | Placement algorithm |
+| `src/main/java/pzformat/FurnitureSet.java` | 25 vanilla-measured set templates |
 | `src/main/java/pzformat/TilePalette.java` | Tile group discovery (67 roles) |
-| `src/main/java/pzformat/GisImport.java` | heightM in Building record |
-| `map-output/html/PLACEMENT_TOOL.md` | Placement tool doc |
+| `map-output/html/modmap.html` | View mod map only + spawn picker (localhost:8880/modmap.html) |
+| `src/main/java/pzformat/RoomScan.java` | Batch vanilla room scanner (see section 2) |
+| `rooms.txt` | RoomScan input — room-type headers + coordinates |
+| `map-output/html/placement.html` | Place mod on vanilla map (localhost:8880/placement.html) |
 
 ---
 
 ## 7. Confirmed tile names
 
-**Office furniture (location_business_office_generic_01)**
-- _0 desk body (Facing S, IsLow)
-- _15, _33 desk parts
-- _18/19 filing cabinet
-- _40/41/42/43 L-desk components
-- _44/45/46/47 cubicle partition walls
-- _53, _136-140 extended desk parts
-
-**Seating**
-- furniture_seating_indoor_01_48 chairW, _49 chairE, _50 chairS, _51 chairN
-- furniture_seating_indoor_01_52-57 more office chair variants
-- furniture_seating_indoor_02_12 chair variant
-- furniture_seating_indoor_03_58/59 chair pair
-- carpentry_01_36-47 dining chairs (chairS/N/E/W variants)
-
-**Tables**
-- furniture_tables_high_01_17/18 conference table pair (Facing N/S)
-- furniture_tables_high_01_30/31 side table pair
-- furniture_tables_high_01_6 table variant
-
-**Shelving**
-- furniture_shelving_01_44 Facing S (back-to-back row, south side)
-- furniture_shelving_01_47 Facing N (back-to-back row, north side)
-- furniture_shelving_01_1 attachedN (wall shelf, north wall)
-- furniture_shelving_01_2 attachedW (wall shelf, west wall)
-
-**Storage**
-- furniture_storage_02_2 filing cabinet
-- carpentry_01_16/19 wooden crates
-- crafted_05_44 crate
-
-**Bathroom stall (fixtures_bathroom_02)**
-- _0 WallW, _1 WallN, _2 WallNW, _3 WallSE
-- _4/_5 stall toilet (pair, no attach flag)
-- _10 DoorWallW, _11 DoorWallN
-- _16 doorW, _17 doorN
-- _20-23 repeat walls (lit variant)
-
 **Bathroom fixtures (fixtures_bathroom_01)**
-- _0 toilet attachedN, _1 attachedW, _2 attachedE, _3 attachedS
-- _22/_23 shower (no waterPiped), _32/_33 shower (waterPiped — use these)
-- _24/_25 bath primary, _26/_27 bath extension (IsGridExtensionTile)
-- _28 cabinet/mirror attachedN, _29 attachedW
+- `_0` toilet attachedN FacingS (backs N wall) — use for N-wall stalls
+- `_1` toilet attachedW FacingE (backs W wall) — use for W-wall stalls
+- `_2` toilet attachedE FacingW, `_3` toilet attachedS FacingN
+- `_22/_23` shower (no waterPiped), `_32/_33` shower (waterPiped — prefer these)
+- `_24/_25` bath primary, `_26/_27` bath extension (IsGridExtensionTile)
+- `_28` mirror attachedN, `_29` mirror attachedW
+
+**Bathroom stalls (fixtures_bathroom_02)**
+- `_0` WallW, `_1` WallN, `_2` WallNW corner, `_3` WallSE corner
+- `_4/_5` stall toilet (pairLow, no attach — free-standing in stall cell)
+- `_10` DoorWallW, `_11` DoorWallN
+- `_16` doorW, `_17` doorN
+- `_20-23` lit wall variants
+
+**Stall tile placement rule:**
+- N-wall stalls (stalls() alongX=true): `stall_doorwall_N` + `stall_door_N`
+- W-wall stalls (stalls() alongX=false): `stall_doorwall_W` + `stall_door_W`
+- ALL placed via `stalls()` only — never via raw stampSet
 
 **Sinks (fixtures_sinks_01)**
-- _0-23 domestic/commercial (Material=Plumbing) — use these
-- _32-35 industrial (Material=MetalPlates) — EXCLUDED
+- `_30` White Hanging FacingN (hangs on S wall, approached from N)
+- `_31` White Hanging FacingW (hangs on E wall, approached from W)
+- `_5` Large Wide FacingS, `_7` Industrial FacingN, `_9` Chrome FacingS
+- `_10` Chrome FacingW, `_16` Dark Industrial FacingE
+- `_32-35` MetalPlates industrial — EXCLUDED from sink role
+
+**Office furniture (location_business_office_generic_01)**
+- `_8/_10` desk pair FacingN, `_28/_29` desk pair FacingW
+- `_30/_31` corner/return FacingN, `_33` filing cabinet FacingE (2-tile)
+- `_48` water dispenser, `_50/51/52` whiteboard 3-tile FacingE
+- `_170/171/172` L-desk set (Office 3 group)
 
 **Appliances**
-- appliances_cooking_01_0 domestic oven
-- appliances_cooking_01_24-29 microwave (IsTableTop)
-- appliances_cooking_01_32/33 toaster (IsTableTop)
-- appliances_refrigeration_01_0 fridge (44 variants)
-- crafted_05_4-7 industrial oven
+- `appliances_cooking_01_0` domestic oven — the ONLY oven for residential/breakroom
+- `appliances_cooking_01_24-29` microwave (IsTableTop)
+- `appliances_refrigeration_01_0` fridge (44 variants)
+- `crafted_05_*` industrial ovens — EXCLUDED (oven_ind role removed)
 
-**Computers/monitors**
-- location_shop_mall_01_4 monitor (found on office desks in vanilla scan)
-- location_community_school_01_16/17 desk lamp (2-tile)
+**Furniture (paired objects — always need extension tile)**
+- `couch_S/N` → extends east (+dx=1)
+- `couch_E/W` → extends south (+dy=1)
+- `bed / bed_home` → always extends east (+dx=1)
+- `put()` in FurniturePlacer handles this automatically
+
+**Shelving / Storage**
+- `furniture_shelving_01_44` FacingS (south-facing, back-to-back row)
+- `furniture_shelving_01_47` FacingN (north-facing, back-to-back row)
+- `furniture_shelving_01_1` attachedN (wall shelf)
+- `furniture_shelving_01_2` attachedW (wall shelf)
+- `furniture_storage_02_2` filing cabinet
 
 ---
 
-## 8. Pending (not started)
+## 8. Pending — after room type profiles
 
 - Multistory buildings (HEIGHT data available, stairwells not implemented)
 - Basements
 - Roof access (stairs, hutch, railings, roof gardens on flat-roof buildings)
 - Minimap (worldmap.xml + thumb.png)
-- West gable end on pitched roofs (likely bx-1 placement, one-line fix)
+- West gable end on pitched roofs (likely bx-1, one-line fix)
 - Barn floor (floorGrass instead of floorInterior)
 - Flat roof object tiles (92 usable roofs_03_* tiles, need vanilla measurement)
 - Wall skins for non-residential buildings (concrete/brick for FLAT_ROOF)
-- BuildingPlan self-test failing on 40×20 footprints
 - Port GisCells + furniture system to C++ (PZMapMaker)

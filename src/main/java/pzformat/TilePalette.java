@@ -478,7 +478,9 @@ public final class TilePalette {
         put("counter",    n -> "counter".equals(prop(ti, n, "container")));
         put("fridge",     n -> "fridge".equals(prop(ti, n, "container")));
         put("oven",       n -> named(n, "Oven") && n.startsWith("appliances_cooking_"));
-        put("oven_ind",   n -> named(n, "Oven") && n.startsWith("crafted_"));
+        // oven_ind intentionally omitted — industrial ovens (crafted_05 woodstoves/smokers)
+        // are placed only by explicit FurnitureSet tiles in cafeteriakitchen/restaurant sets,
+        // never by the activity system which fires across all building types.
         // Sink: domestic/commercial only. Indices 32-35 in fixtures_sinks_01
         // have Material=MetalPlates — industrial utility sinks. Exclude them.
         put("sink", n -> named(n, "Sink")
@@ -581,6 +583,36 @@ public final class TilePalette {
         put("pallet", n -> named(n, "Empty Pallet") || named(n, "Pallet"));
 
         put("locker",     n -> named(n, "Locker"));
+
+        // Military-specific storage.
+        put("locker_military", n -> named(n, "Military Locker")
+                || named(n, "Green Wall Locker"));
+        put("crate_military", n -> named(n, "Military Crate"));
+
+        // Large free-standing metal shelving (furniture_shelving_01_25-27).
+        put("shelves_metal", n -> "metal_shelves".equals(prop(ti, n, "container"))
+                && n.startsWith("furniture_shelving_")
+                && !anyAttach(n));
+
+        // Wall-mounted metal shelves (furniture_shelving_01_29-30).
+        put("shelves_wall_metal", n -> "metal_shelves".equals(prop(ti, n, "container"))
+                && n.startsWith("furniture_shelving_")
+                && (flag(ti, n, "attachedE") || flag(ti, n, "attachedW")
+                    || flag(ti, n, "attachedN") || flag(ti, n, "attachedS")));
+
+        // Hospital beds.
+        put("bed_medical", n -> named(n, "Large Medical Bed")
+                && !flag(ti, n, "IsGridExtensionTile"));
+
+        // Grocery display stand.
+        put("display_stand", n -> "grocerstand".equals(prop(ti, n, "container")));
+
+        // Lectern / pulpit.
+        put("lectern", n -> named(n, "Lectern Stand"));
+
+        // Dark Wooden Chair facing north — church pew rows.
+        put("chair_pew_N", n -> named(n, "Dark Wooden Chair")
+                && flag(ti, n, "chairN"));
 
         // ---- Office fittings ----
         put("watercooler", n -> named(n, "Dispenser") && flag(ti, n, "IsLow"));

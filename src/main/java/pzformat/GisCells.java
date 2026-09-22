@@ -120,6 +120,11 @@ public final class GisCells {
         Files.createDirectories(mapDir);
 
         int written = 0;
+        // Building indices by roof outcome, as sets: a building spanning
+        // several cells is visited once per cell.
+        java.util.Set<Integer> roofPitched = new java.util.HashSet<>();
+        java.util.Set<Integer> roofFlatWide = new java.util.HashSet<>();
+        java.util.Set<Integer> roofFlatClass = new java.util.HashSet<>();
         long totalRooms = 0, totalSquares = 0, totalEdgeFill = 0, totalTufts = 0;
         List<int[]> spawns = new ArrayList<>();
 
@@ -386,8 +391,13 @@ public final class GisCells {
                         if (bx + bw <= 0 || by + bh <= 0 || bx >= 256 || by >= 256) continue;
 
                         BuildingClass bc = BuildingClass.of(bld);
+                        boolean tooWide = Math.min(bw, bh) > MAX_PITCH_SPAN;
 
-                        if (bc == BuildingClass.FLAT_ROOF) {
+                        if (bc == BuildingClass.FLAT_ROOF) roofFlatClass.add(bi);
+                        else if (tooWide) roofFlatWide.add(bi);
+                        else roofPitched.add(bi);
+
+                        if (bc == BuildingClass.FLAT_ROOF || tooWide) {
                             // Flat roof: ceiling tile only on every footprint
                             // square.  No slope, no gable.
                             for (int lx = 0; lx < bw; lx++) {
@@ -435,6 +445,11 @@ public final class GisCells {
                                 int distLow  = pos;
                                 int distHigh = (span - 1) - pos;
 
+                                // Far face: tile = 29 - distLow (eave=29, peak=29-N)
+                                // Near face: tile = distHigh       (eave=0,  peak=N)
+                                // At the center of an ODD span distLow==distHigh, the
+                                // far-face tile is used (distLow <= distHigh branch).
+                                // Stacking both tiles produced z-fighting/jagged spikes.
                                 int tileNum = distLow <= distHigh
                                         ? 29 - distLow
                                         : distHigh;
@@ -477,6 +492,7 @@ public final class GisCells {
                         int bw = fr.w(), bh = fr.h();
                         if (bx + bw <= 0 || by + bh <= 0 || bx >= 256 || by >= 256) continue;
                         if (bw < bh) continue;              // north-south ridge: not measured
+                        if (bh > MAX_PITCH_SPAN) continue;  // got a flat roof instead
                         int span = bh;
                         if (span < 1) continue;
 
@@ -545,6 +561,10 @@ public final class GisCells {
             }
         }
 
+        System.out.println("roofs: " + roofPitched.size() + " pitched, "
+                + roofFlatWide.size() + " flat (wider than " + MAX_PITCH_SPAN
+                + " tiles, too wide to pitch), "
+                + roofFlatClass.size() + " flat (commercial/tall class)");
         System.out.println("cells written: " + written
                 + "   squares: " + totalSquares + "   rooms: " + totalRooms
                 + "   edge-filled: " + totalEdgeFill);
@@ -573,6 +593,21 @@ public final class GisCells {
                 + "\" from the location list.\nIf it is absent the map is not"
                 + " registered and the cells will never be read.");
     }
+
+    /**
+     * Widest short side, in tiles, that a single-level pitched roof can span.
+     *
+     * roofs_30_02 has six slope steps per face: the near face uses _0.._5 and
+     * the far face _29.._24. The steps past that (_6, _7, _22, _23) do not
+     * exist in the sheet, and _8+ / _21- belong to other rows. A roof peaks at
+     * step (span-1)/2, so anything past 12 tiles ran off the sheet: the
+     * missing steps fell back to ceiling-only (the brown strip along the
+     * ridge) and the rest drew the wrong pieces.
+     *
+     * Wider buildings get a flat roof until the vanilla multi-level roof
+     * (slope continuing onto z=2) has been measured.
+     */
+    static final int MAX_PITCH_SPAN = 12;
 
     /**
      * Mirror of IsoChunk.hasEmptySquaresOnLevelZero(), run against the REPARSED
@@ -1231,6 +1266,20 @@ public final class GisCells {
         System.arraycopy(cur, 0, next, 0, cur.length);
         next[cur.length] = tile;
         cell.setSquare(x, y, 0, next, roomId);
+    }
+
+    /** Remove one tile index from a square's tile list. No-op if absent. */
+    static void removeTile(CellData cell, int x, int y, int tile) {
+        if (x < 0 || y < 0 || x >= 256 || y >= 256) return;
+        int[] cur = cell.tilesAt(x, y, 0);
+        if (cur == null) return;
+        int pos = -1;
+        for (int i = 0; i < cur.length; i++) if (cur[i] == tile) { pos = i; break; }
+        if (pos < 0) return;
+        int[] next = new int[cur.length - 1];
+        System.arraycopy(cur, 0, next, 0, pos);
+        System.arraycopy(cur, pos + 1, next, pos, cur.length - pos - 1);
+        cell.setSquare(x, y, 0, next, cell.roomAt(x, y, 0));
     }
 
     static void writeChunkDensity(LotHeader h, List<int[]> rects) {

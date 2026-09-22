@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PZGisImport Map Viewer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    background: #1a1a1a;
+    color: #eee;
+    font-family: monospace;
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+#toolbar {
+    background: #222;
+    border-bottom: 1px solid #444;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+#toolbar h1 { font-size: 14px; color: #aaa; }
+
+#coords { font-size: 13px; color: #4fc; min-width: 280px; }
+
+#spawn-count { font-size: 12px; color: #fa0; }
+
+#btn-generate {
+    background: #2a6; color: #fff; border: none;
+    padding: 6px 14px; border-radius: 4px; cursor: pointer;
+    font-size: 12px; font-family: monospace; font-weight: bold;
+}
+#btn-generate:hover { background: #3b7; }
+#btn-generate:disabled { background: #444; color: #888; cursor: default; }
+
+#btn-clear {
+    background: #633; color: #fff; border: none;
+    padding: 6px 10px; border-radius: 4px; cursor: pointer;
+    font-size: 12px; font-family: monospace;
+}
+#btn-clear:hover { background: #844; }
+
+#hint { font-size: 11px; color: #555; }
+
+#viewer { flex: 1; position: relative; }
+
+/* SVG overlay for pins — sits on top of OSD canvas */
+#pin-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.spawn-pin circle { pointer-events: all; cursor: pointer; }
+.spawn-pin:hover circle { stroke: #fff; }
+
+/* Output panel */
+#output-panel {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.8);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+}
+#output-panel.visible { display: flex; }
+
+#output-box {
+    background: #1e1e1e;
+    border: 1px solid #4fc;
+    border-radius: 8px;
+    padding: 20px;
+    max-width: 760px;
+    width: 90%;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+#output-box h2 { color: #4fc; font-size: 14px; }
+#output-box p  { color: #888; font-size: 11px; }
+
+#lua-output {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 12px;
+    font-size: 11px;
+    color: #ff9;
+    white-space: pre;
+    overflow: auto;
+    flex: 1;
+    max-height: 50vh;
+}
+
+#output-buttons { display: flex; gap: 8px; }
+#btn-copy-lua {
+    background: #446; color: #fff; border: none;
+    padding: 7px 14px; border-radius: 4px; cursor: pointer; font-family: monospace;
+}
+#btn-copy-lua:hover { background: #557; }
+#btn-close-output {
+    background: #333; color: #ccc; border: none;
+    padding: 7px 14px; border-radius: 4px; cursor: pointer; font-family: monospace;
+}
+#btn-close-output:hover { background: #444; }
+
+#loading {
+    position: fixed; inset: 0; background: #1a1a1a;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 12px; z-index: 200;
+    font-size: 14px; color: #aaa;
+}
+</style>
+</head>
+<body>
+
+<div id="loading">Loading PZGisImport map...</div>
+
+<div id="toolbar">
+    <h1>🗺 PZGisImport</h1>
+    <div id="coords">Tile: —, —  |  Cell: —, —</div>
+    <span id="spawn-count">Spawns: 0 / 20</span>
+    <button id="btn-generate" disabled>Generate spawnpoints.lua</button>
+    <button id="btn-clear">Clear pins</button>
+    <span id="hint">Click to place spawn · Right-click pin to remove · Scroll to zoom</span>
+</div>
+
+<div id="viewer">
+    <svg id="pin-overlay"></svg>
+</div>
+
+<div id="output-panel">
+    <div id="output-box">
+        <h2>spawnpoints.lua</h2>
+        <p>Copy this and paste it over ~/Zomboid/mods/PZGisImport/common/media/maps/PZGisImport/spawnpoints.lua</p>
+        <div id="lua-output"></div>
+        <div id="output-buttons">
+            <button id="btn-copy-lua">Copy to clipboard</button>
+            <button id="btn-close-output">Close</button>
+        </div>
+    </div>
+</div>
+
+<script src="openseadragon/openseadragon.js"></script>
+<script>
+const DZI      = 'map_data/mod_maps/PZGisImport/base_top/layer0.dzi';
+const INFO_URL = 'map_data/mod_maps/PZGisImport/base_top/map_info.json';
+const MAX_PINS = 20;
+
+const PROFESSIONS = [
+    'unemployed','carpenter','farmer','fisherman','lumberjack',
+    'mechanics','electrician','securityguard','burgerflipper'
+];
+
+const PIN_COLORS = [
+    '#ff4444','#ff8800','#ffcc00','#44ff44','#00ccff',
+    '#8844ff','#ff44aa','#44ffcc','#ff6644','#88ff00',
+    '#00aaff','#ff0088','#aaffaa','#ffaaff','#44aaff',
+    '#ff8844','#aaffff','#ffff44','#88aaff','#ff44ff'
+];
+
+let mapInfo = null;
+let viewer  = null;
+let pins    = [];   // [{tileX, tileY, cellX, cellY, posX, posY, screenX, screenY}]
+
+// ── init ──────────────────────────────────────────────────────────────────────
+async function init() {
+    const r = await fetch(INFO_URL);
+    if (!r.ok) throw new Error('Could not load map_info.json');
+    mapInfo = await r.json();
+
+    viewer = OpenSeadragon({
+        id: 'viewer',
+        prefixUrl: 'openseadragon/images/',
+        tileSources: DZI,
+        showNavigationControl: true,
+        animationTime: 0.3,
+        minZoomLevel: 0.01,
+        maxZoomLevel: 32,
+        defaultZoomLevel: 0,
+        visibilityRatio: 0.1,
+        constrainDuringPan: false,
+    });
+
+    viewer.addHandler('open', () => {
+        document.getElementById('loading').style.display = 'none';
+        fitToContent();
+        repositionPins();
+    });
+
+    viewer.addHandler('animation',       repositionPins);
+    viewer.addHandler('update-viewport', repositionPins);
+    viewer.addHandler('resize',          repositionPins);
+
+    // Coordinate display on mouse move
+    viewer.addHandler('mouse-move', (e) => {
+        const img = viewerToImg(e.position);
+        const tx  = Math.floor(img.x) - mapInfo.x0;
+        const ty  = Math.floor(img.y) - mapInfo.y0;
+        document.getElementById('coords').textContent =
+            `Tile: ${tx}, ${ty}  |  Cell: ${Math.floor(tx/256)}, ${Math.floor(ty/256)}`;
+    });
+
+    // Click to place pin
+    viewer.addHandler('canvas-click', (e) => {
+        if (!e.quick) return;           // ignore drags
+        if (pins.length >= MAX_PINS) return;
+        const img = viewerToImg(e.position);
+        const tx  = Math.floor(img.x) - mapInfo.x0;
+        const ty  = Math.floor(img.y) - mapInfo.y0;
+        addPin(tx, ty);
+        e.preventDefaultAction = true;
+    });
+}
+
+// ── coordinate helpers ────────────────────────────────────────────────────────
+function viewerToImg(screenPt) {
+    const vp = viewer.viewport.pointFromPixel(screenPt);
+    return viewer.viewport.viewportToImageCoordinates(vp);
+}
+
+function imgToScreen(imgX, imgY) {
+    const vp  = viewer.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(imgX, imgY));
+    return viewer.viewport.viewportToViewerElementCoordinates(vp);
+}
+
+// ── fit viewport to content ────────────────────────────────────────────────────
+function fitToContent() {
+    const cr  = mapInfo.cell_rects[0];
+    const cs  = mapInfo.cell_size;
+    const cix = cr[0] * cs - mapInfo.x0;   // content top-left in image pixels
+    const ciy = cr[1] * cs - mapInfo.y0;
+    const ciw = cr[2] * cs;
+    const cih = cr[3] * cs;
+    const iw  = mapInfo.w;
+    viewer.viewport.fitBounds(
+        new OpenSeadragon.Rect(cix/iw, ciy/iw, ciw/iw, cih/iw), true);
+}
+
+// ── pins ──────────────────────────────────────────────────────────────────────
+function addPin(tileX, tileY) {
+    // spawnpoints.lua uses the LEGACY 300-tile cell grid, not 256.
+    const cellX = Math.floor(tileX / 300);
+    const cellY = Math.floor(tileY / 300);
+    const posX  = ((tileX % 300) + 300) % 300;
+    const posY  = ((tileY % 300) + 300) % 300;
+    pins.push({ tileX, tileY, cellX, cellY, posX, posY });
+    updateUI();
+    repositionPins();
+}
+
+function removePin(i) {
+    pins.splice(i, 1);
+    updateUI();
+    repositionPins();
+}
+
+function updateUI() {
+    document.getElementById('spawn-count').textContent = `Spawns: ${pins.length} / ${MAX_PINS}`;
+    document.getElementById('btn-generate').disabled = pins.length === 0;
+}
+
+function repositionPins() {
+    if (!viewer || !viewer.isOpen()) return;
+    const svg = document.getElementById('pin-overlay');
+    // Sync SVG size to viewer element
+    const vEl = document.getElementById('viewer');
+    svg.setAttribute('width',  vEl.clientWidth);
+    svg.setAttribute('height', vEl.clientHeight);
+
+    // Rebuild all pins
+    svg.innerHTML = '';
+    pins.forEach((p, i) => {
+        // image pixel coords of this tile
+        const imgX = p.tileX + mapInfo.x0 + 0.5;
+        const imgY = p.tileY + mapInfo.y0 + 0.5;
+        const sc   = imgToScreen(imgX, imgY);
+
+        const color = PIN_COLORS[i % PIN_COLORS.length];
+        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        g.setAttribute('class', 'spawn-pin');
+        g.setAttribute('transform', `translate(${sc.x},${sc.y})`);
+
+        // Drop shadow
+        const shadow = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        shadow.setAttribute('r', '10');
+        shadow.setAttribute('fill', 'rgba(0,0,0,0.4)');
+        shadow.setAttribute('transform', 'translate(2,2)');
+        g.appendChild(shadow);
+
+        // Pin circle
+        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        circle.setAttribute('r', '9');
+        circle.setAttribute('fill', color);
+        circle.setAttribute('stroke', '#fff');
+        circle.setAttribute('stroke-width', '1.5');
+        g.appendChild(circle);
+
+        // Number label
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('dominant-baseline', 'central');
+        text.setAttribute('fill', '#000');
+        text.setAttribute('font-size', '10');
+        text.setAttribute('font-weight', 'bold');
+        text.setAttribute('font-family', 'monospace');
+        text.textContent = i + 1;
+        g.appendChild(text);
+
+        // Tooltip
+        const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+        title.textContent = `#${i+1}  Tile ${p.tileX},${p.tileY}  Cell ${p.cellX}_${p.cellY}  Local ${p.posX},${p.posY}\nRight-click to remove`;
+        g.appendChild(title);
+
+        // Right-click to remove
+        g.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            removePin(i);
+        });
+
+        svg.appendChild(g);
+    });
+}
+
+// ── lua generation ────────────────────────────────────────────────────────────
+document.getElementById('btn-generate').addEventListener('click', () => {
+    if (pins.length === 0) return;
+
+    const entries = pins.map(p =>
+        `    { worldX = ${p.cellX}, worldY = ${p.cellY}, posX = ${p.posX}, posY = ${p.posY}, posZ = 0 },`
+    ).join('\n');
+
+    const lua = `function SpawnPoints()\nlocal spawns = {\n${entries}\n}\nreturn {\n${PROFESSIONS.map(p => `    ${p} = spawns,`).join('\n')}\n}\nend`;
+
+    document.getElementById('lua-output').textContent = lua;
+    document.getElementById('output-panel').classList.add('visible');
+});
+
+document.getElementById('btn-copy-lua').addEventListener('click', () => {
+    const text = document.getElementById('lua-output').textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        document.getElementById('btn-copy-lua').textContent = 'Copied!';
+        setTimeout(() => {
+            document.getElementById('btn-copy-lua').textContent = 'Copy to clipboard';
+        }, 2000);
+    });
+});
+
+document.getElementById('btn-close-output').addEventListener('click', () => {
+    document.getElementById('output-panel').classList.remove('visible');
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+    pins = [];
+    updateUI();
+    repositionPins();
+});
+
+// ── boot ─────────────────────────────────────────────────────────────────────
+init().catch(err => {
+    document.getElementById('loading').textContent = 'Error: ' + err.message;
+    console.error(err);
+});
+</script>
+</body>
+</html>

@@ -470,6 +470,23 @@ public final class BuildingPlan {
         }
 
         // ---- Residential recipe (default) ----
+        //
+        // Small buildings (under 80 tiles) cannot be subdivided into four
+        // meaningful rooms. A 6x8 house trying to fit livingroom + kitchen +
+        // bathroom + bedroom ends up with 3x3 closets that get the full
+        // furniture profile — three toilets in one room, a bed in a cupboard.
+        // Use a simplified one- or two-room recipe for small footprints.
+        if (area <= 40) {
+            // Tiny studio: one room that gets kitchen furniture + a chair.
+            // FurnitureProfile.forRoom("studio") handles this mix.
+            return List.of("studio");
+        }
+        if (area <= 80) {
+            // Small house: kitchen + bedroom (bed + toilet squeezed in).
+            // Two rooms instead of four stops the subdivision collapse.
+            return List.of("kitchen", "bedroom");
+        }
+
         List<String> rooms =
                 new ArrayList<>(
                         List.of(

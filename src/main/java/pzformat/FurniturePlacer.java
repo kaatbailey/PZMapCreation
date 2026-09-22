@@ -47,6 +47,7 @@ public final class FurniturePlacer {
 
     // Current room, in cell-local coordinates.
     private int rx, ry, rw, rh, roomId;
+    private boolean tinyRoom;   // room < 5x5: cap activities to avoid overcrowding
     private byte[][] grid;
     /** What was placed where, so the circulation check can undo the last thing. */
     private final List<int[]> placed = new ArrayList<>();
@@ -126,6 +127,7 @@ public final class FurniturePlacer {
                          FurnitureProfile profile, Density density) {
         rx = r.x(); ry = r.y(); rw = r.w(); rh = r.h(); roomId = ri;
         if (rw < 3 || rh < 3) return;   // too small to hold anything with clearance
+        tinyRoom = rw * rh < 25;
 
         grid = new byte[rw][rh];
         placed.clear();
@@ -139,9 +141,11 @@ public final class FurniturePlacer {
             case CENTRE    -> centre(profile.activities, density);
             case ZONED     -> zoned(profile, density);
             case STALLS    -> stalls(profile.activities, density);
+            case STAMP     -> stampLayout(profile, density);
+            case AUTHORED  -> authoredLayout(profile, density);
         }
 
-        decor(profile.decorBudget, density);
+        if (!tinyRoom) decor(profile.decorBudget, density);
         enforceCirculation();
     }
 
@@ -155,11 +159,14 @@ public final class FurniturePlacer {
                 int wx = rx + lx, wy = ry + ly;
                 if (!doorSquares.contains(wx + "," + wy)) continue;
                 mark(lx, ly, KEEP_CLEAR);
-                // Two squares of clearance: the approach square and one more
-                // beyond it, so furniture cannot block someone walking in.
+                // Clearance around the door: 2 squares in large rooms so
+                // furniture cannot block the entrance; 1 square in tiny rooms
+                // so approach marking doesn't consume the entire perimeter.
+                int clearance = tinyRoom ? 1 : 2;
                 for (int[] d : new int[][]{{0,1},{0,-1},{1,0},{-1,0}}) {
                     mark(lx + d[0], ly + d[1], KEEP_CLEAR);
-                    mark(lx + d[0]*2, ly + d[1]*2, KEEP_CLEAR);
+                    if (clearance > 1)
+                        mark(lx + d[0]*2, ly + d[1]*2, KEEP_CLEAR);
                 }
             }
         }
@@ -178,22 +185,31 @@ public final class FurniturePlacer {
      * activities land once if they fire at all.
      */
     private void perimeter(List<Activity> activities, Density density) {
+        // Each line: {startX, startY, stepX, stepY, facing}
+        // Objects sit ON the wall square (ly=0 for N wall, ly=rh-1 for S wall).
+        // Facing is INWARD so the object faces the centre of the room:
+        //   N wall -> facing S (object backs the north wall, faces south)
+        //   S wall -> facing N
+        //   W wall -> facing E
+        //   E wall -> facing W
         int[][] lines = {
-                {1, 1, 1, 0, 'N'},
-                {1, rh - 2, 1, 0, 'S'},
-                {1, 1, 0, 1, 'W'},
-                {rw - 2, 1, 0, 1, 'E'},
+                {1, 0,      1, 0, 'S'},   // N wall, facing south (inward)
+                {1, rh - 1, 1, 0, 'N'},   // S wall, facing north (inward)
+                {0, 1,      0, 1, 'E'},   // W wall, facing east  (inward)
+                {rw - 1, 1, 0, 1, 'W'},   // E wall, facing west  (inward)
         };
 
         int line = rng.nextInt(4);
+        int activityCount = 0;
         for (Activity a : activities) {
+            if (tinyRoom && activityCount >= 2) break;
             if (!fires(a, density)) continue;
+            activityCount++;
 
             boolean done = false;
             for (int attempt = 0; attempt < 4 && !done; attempt++) {
                 int[] L = lines[(line + attempt) % 4];
-                if (a.chance() >= 1.0) {
-                    // Required: fill the entire wall line with this activity.
+                if (a.chance() >= 1.0 && !tinyRoom) {
                     done = fillLine(a, L, density);
                 } else {
                     done = placeAlongLine(a, L, density);
@@ -213,7 +229,7 @@ public final class FurniturePlacer {
     private boolean fillLine(Activity a, int[] L, Density density) {
         int sx = L[0], sy = L[1], dx = L[2], dy = L[3];
         char facing = (char) L[4];
-        int len = dx != 0 ? rw - 2 : rh - 2;
+        int len = dx != 0 ? rw - 1 : rh - 1;
         if (len < 1) return false;
 
         // Spacing between anchors: 1 for dense, 2 for normal, 3 for sparse.
@@ -246,7 +262,7 @@ public final class FurniturePlacer {
     private boolean placeAlongLine(Activity a, int[] L, Density density) {
         int sx = L[0], sy = L[1], dx = L[2], dy = L[3];
         char facing = (char) L[4];
-        int len = dx != 0 ? rw - 2 : rh - 2;
+        int len = dx != 0 ? rw - 1 : rh - 1;
         if (len < a.runLength()) return false;
 
         int start = rng.nextInt(Math.max(1, len - a.runLength() + 1));
@@ -570,7 +586,10 @@ public final class FurniturePlacer {
      */
     private void satellites(Activity a, int ax, int ay, char facing, Density density) {
         for (Satellite s : a.satellites()) {
-            if (rng.nextDouble() > s.chance() * density.optionalScale) continue;
+            // Required satellites (chance == 1.0) are never skipped by density.
+            // A desk without a chair is not a desk; a table without chairs is not a table.
+            boolean required = s.chance() >= 1.0;
+            if (!required && rng.nextDouble() > s.chance() * density.optionalScale) continue;
 
             switch (s.rel()) {
                 case ON_TOP -> {
@@ -655,6 +674,7 @@ public final class FurniturePlacer {
 
     /** Potted plants want light, so they go within two squares of a window. */
     private void plantNearWindow() {
+        if (rw * rh < 30) return;   // room too small — every square is "near a window"
         String tile = pal.pickFrom("plant_floor", rng);
         if (tile == null) return;
 
@@ -858,6 +878,271 @@ public final class FurniturePlacer {
     }
 
     // ---------------------------------------------------------------
+    // Stamp layout
+    // ---------------------------------------------------------------
+
+    /**
+     * Fill the room by stamping measured vanilla sets repeatedly across the
+     * floor with density-driven aisle gaps between stamps.
+     *
+     * Algorithm:
+     *   1. Pick a primary set for this room type. If the room is large enough,
+     *      attempt a secondary complementary set in whatever space remains.
+     *   2. Walk a grid of origin points across the room interior, spaced by
+     *      (set.w + aisle) × (set.h + aisle). At each origin attempt a stamp;
+     *      skip if the density roll fires or the origin is blocked.
+     *   3. Run the normal perimeter pass for any profile activities (wall extras:
+     *      shelves, watercooler, television) after the stamps are placed.
+     *   4. Decor runs as normal after this method returns.
+     */
+    private void stampLayout(FurnitureProfile profile, Density density) {
+        // All STAMP rooms: separate wall-run sets from floor sets.
+        List<FurnitureSet> wallRunSets = new ArrayList<>();
+        List<FurnitureSet> floorSets   = new ArrayList<>();
+        for (FurnitureSet s : FurnitureSet.forRoom(profile.stampRoomType, rw, rh)) {
+            if (s.wallRun) wallRunSets.add(s);
+            else           floorSets.add(s);
+        }
+
+        if (!wallRunSets.isEmpty()) {
+            FurnitureSet wr = wallRunSets.get(rng.nextInt(wallRunSets.size()));
+            stampWallRun(wr, 'N', density);
+            if (rh >= 8 && wallRunSets.size() > 1) {
+                FurnitureSet wr2 = wallRunSets.get(rng.nextInt(wallRunSets.size()));
+                if (wr2 != wr) stampWallRun(wr2, 'S', density);
+            }
+        }
+
+        if (floorSets.isEmpty()) {
+            perimeter(profile.activities, density);
+            return;
+        }
+
+        FurnitureSet primary = weightedPick(floorSets);
+        int aisle  = density.aisle + 1;
+        int stepX  = primary.w + aisle;
+        int stepY  = primary.h + aisle;
+        int margin = 2;
+
+        for (int uy = margin; uy + primary.h <= rh - margin; uy += stepY) {
+            for (int ux = margin; ux + primary.w <= rw - margin; ux += stepX) {
+                if (rng.nextDouble() < density.skip) continue;
+                stampSet(primary, ux, uy);
+            }
+        }
+
+        if ((rw >= 12 || rh >= 12) && floorSets.size() > 1) {
+            FurnitureSet secondary = weightedPick(floorSets);
+            if (secondary != primary) {
+                for (int attempt = 0; attempt < 8; attempt++) {
+                    int ux = margin + rng.nextInt(Math.max(1, rw - margin * 2 - secondary.w));
+                    int uy = margin + rng.nextInt(Math.max(1, rh - margin * 2 - secondary.h));
+                    if (stampFits(secondary, ux, uy)) {
+                        stampSet(secondary, ux, uy);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!profile.activities.isEmpty()) {
+            perimeter(profile.activities, density);
+        }
+    }
+
+    /**
+     * Authored commercial bathroom layout.
+     *
+     * Delegates toilet placement to the proven stalls() method which correctly
+     * stacks stall_toilet + stall_wall + stall_doorwall + stall_door on each
+     * square. stalls() already picks the longest wall (alongX = rw>=rh).
+     *
+     * We add: hanging sinks on the opposite wall, bin + dispenser in corner,
+     * and blower from profile activities.
+     */
+    private void authoredLayout(FurnitureProfile profile, Density density) {
+        // Step 1: Toilet stalls — delegate entirely to proven stalls() method.
+        // stalls() runs along the longest wall automatically and correctly
+        // stacks all stall tiles (toilet + walls + door) on each floor square.
+        List<Activity> stallActs = List.of(Activity.of("toilet_N"));
+        stalls(stallActs, density);
+
+        // Step 2: Hanging sinks on the opposite wall.
+        // Wide room (rw>=rh): stalls on N wall → sinks on S wall.
+        // Tall room (rh>rw):  stalls on W wall → sinks on E wall.
+        boolean wide = rw >= rh;
+        if (wide) {
+            int sinkY = rh - 2;
+            if (sinkY >= 3) {
+                for (int sx = 1; sx < rw - 1; sx += 2) {
+                    if (hasKeepClear(sx, sinkY, 1, 1) || !free(sx, sinkY)) continue;
+                    roleFacing = 'N'; currentRole = "sink";
+                    if (put(sx, sinkY, "fixtures_sinks_01_30", false, "sink"))
+                        stackWorld(rx + sx, ry + sinkY + 1, "fixtures_bathroom_01_28");
+                }
+            }
+        } else {
+            int sinkX = rw - 2;
+            if (sinkX >= 3) {
+                for (int sy = 1; sy < rh - 1; sy += 2) {
+                    if (hasKeepClear(sinkX, sy, 1, 1) || !free(sinkX, sy)) continue;
+                    roleFacing = 'W'; currentRole = "sink";
+                    if (put(sinkX, sy, "fixtures_sinks_01_31", false, "sink"))
+                        stackWorld(rx + sinkX + 1, ry + sy, "fixtures_bathroom_01_29");
+                }
+            }
+        }
+
+        // Step 3: Bin + dispenser in SE corner.
+        int cx = rw - 2, cy = rh - 2;
+        if (free(cx,     cy)) put(cx,     cy, "trashcontainers_01_20",                  false, null);
+        if (free(cx - 1, cy)) put(cx - 1, cy, "location_business_office_generic_01_48", false, null);
+
+        // Step 4: Perimeter extras (blower) from profile activities.
+        if (!profile.activities.isEmpty()) perimeter(profile.activities, density);
+    }
+    private void stampWallRun(FurnitureSet set, char wall, Density density) {
+        int aisle = density.aisle + 1;
+
+        switch (wall) {
+            case 'N' -> {
+                int step = set.w + aisle;
+                // Floor tiles sit at ly=1 (1 tile in from N wall).
+                for (int ux = 1; ux + set.w <= rw - 1; ux += step) {
+                    if (rng.nextDouble() < density.skip) continue;
+                    if (hasKeepClear(ux, 1, set.w, set.h)) continue;
+                    stampSet(set, ux, 1);
+                }
+            }
+            case 'S' -> {
+                int step = set.w + aisle;
+                int ly = rh - 1 - set.h;
+                if (ly < 1) return;
+                for (int ux = 1; ux + set.w <= rw - 1; ux += step) {
+                    if (rng.nextDouble() < density.skip) continue;
+                    if (hasKeepClear(ux, ly, set.w, set.h)) continue;
+                    stampSet(set, ux, ly);
+                }
+            }
+            case 'W' -> {
+                int step = set.h + aisle;
+                for (int uy = 1; uy + set.h <= rh - 1; uy += step) {
+                    if (rng.nextDouble() < density.skip) continue;
+                    if (hasKeepClear(1, uy, set.w, set.h)) continue;
+                    stampSet(set, 1, uy);
+                }
+            }
+            case 'E' -> {
+                int step = set.h + aisle;
+                int lx = rw - 1 - set.w;
+                if (lx < 1) return;
+                for (int uy = 1; uy + set.h <= rh - 1; uy += step) {
+                    if (rng.nextDouble() < density.skip) continue;
+                    if (hasKeepClear(lx, uy, set.w, set.h)) continue;
+                    stampSet(set, lx, uy);
+                }
+            }
+        }
+    }
+
+    /** True if any square in the footprint (ux..ux+w, uy..uy+h) is KEEP_CLEAR. */
+    private boolean hasKeepClear(int ux, int uy, int w, int h) {
+        for (int dx = 0; dx < w; dx++)
+            for (int dy = 0; dy < h; dy++) {
+                int lx = ux + dx, ly = uy + dy;
+                if (inRoom(lx, ly) && grid[lx][ly] == KEEP_CLEAR) return true;
+            }
+        return false;
+    }
+
+    private FurnitureSet weightedPick(List<FurnitureSet> sets) {
+        int total = 0;
+        for (FurnitureSet s : sets) total += s.w * s.h;
+        int roll = rng.nextInt(Math.max(1, total));
+        int cum = 0;
+        for (FurnitureSet s : sets) {
+            cum += s.w * s.h;
+            if (roll < cum) return s;
+        }
+        return sets.get(sets.size() - 1);
+    }
+
+    /**
+     * Place all tiles of a set with its top-left corner at room-local (ux, uy).
+     *
+     * Floor tiles go through the normal grid-occupancy path so the circulation
+     * check can see them. Wall-mounted tiles go to stackWorld (the wall square
+     * just north of the tile position). On-top tiles stack on an already-placed
+     * SURFACE square — if that square is not yet a surface (e.g. the floor tile
+     * came first in a different stamp pass) the top tile is silently skipped
+     * rather than failing the whole stamp.
+     */
+    private void stampSet(FurnitureSet set, int ux, int uy) {
+        for (FurnitureSet.Tile t : set.tiles) {
+            int lx = ux + t.dx();
+            int ly = uy + t.dy();
+
+            if (t.wallMounted()) {
+                // Place on the wall square adjacent to this tile's room position.
+                // wallDir tells us which wall the tile attaches to:
+                //   N → wall square is one row north  (wy-1)
+                //   S → wall square is one row south  (wy+1)
+                //   W → wall square is one col west   (wx-1)
+                //   E → wall square is one col east   (wx+1)
+                int wx = rx + lx, wy = ry + ly;
+                int[] wq = switch (t.wallDir()) {
+                    case 'N' -> new int[]{wx,     wy - 1};
+                    case 'S' -> new int[]{wx,     wy + 1};
+                    case 'W' -> new int[]{wx - 1, wy    };
+                    case 'E' -> new int[]{wx + 1, wy    };
+                    default  -> new int[]{wx,     wy - 1}; // fallback N
+                };
+                stackWorld(wq[0], wq[1], t.tile());
+
+            } else if (t.onTop()) {
+                // Stack only if the floor tile below is already a SURFACE.
+                if (inRoom(lx, ly) && grid[lx][ly] == SURFACE) {
+                    stack(lx, ly, t.tile());
+                }
+
+            } else {
+                // Normal floor tile — skip if occupied or out of bounds.
+                if (!inRoom(lx, ly) || !free(lx, ly)) continue;
+                boolean surface = isSurface(surfaceRoleFor(t.tile()));
+                GisCells.appendTile(cell, rx + lx, ry + ly,
+                        cell.tileIndex(t.tile()), roomId);
+                grid[lx][ly] = surface ? SURFACE : TAKEN;
+                placed.add(new int[]{lx, ly});
+            }
+        }
+    }
+
+    /**
+     * True when every floor tile of the set fits at room-local (ux, uy).
+     * Wall and on-top tiles are not checked — they never need free floor.
+     */
+    private boolean stampFits(FurnitureSet set, int ux, int uy) {
+        for (FurnitureSet.Tile t : set.tiles) {
+            if (t.wallMounted() || t.onTop()) continue;
+            if (!free(ux + t.dx(), uy + t.dy())) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Infer a role name from a raw tile name so isSurface() can mark the
+     * correct grid state. Only the prefixes that matter for on-top placement
+     * need covering — everything else is TAKEN, which is fine.
+     */
+    private static String surfaceRoleFor(String tile) {
+        if (tile.startsWith("fixtures_counters"))    return "counter";
+        if (tile.startsWith("furniture_tables"))     return "table";
+        if (tile.startsWith("location_business_office_generic_01_1")
+         || tile.startsWith("location_business_office_generic_01_4")) return "desk";
+        return tile;   // will not match isSurface() — grid cell stays TAKEN
+    }
+
+    // ---------------------------------------------------------------
     // Grid and writing
     // ---------------------------------------------------------------
 
@@ -877,7 +1162,56 @@ public final class FurniturePlacer {
         GisCells.appendTile(cell, rx + lx, ry + ly, cell.tileIndex(tile), roomId);
         grid[lx][ly] = surface ? SURFACE : TAKEN;
         placed.add(new int[]{lx, ly});
+
+        // Paired objects (couches, beds, desks) have a second tile at index+1
+        // that must be placed beside the anchor or the sprite is cut in half.
+        // The extension tile goes to the side of the anchor based on its facing:
+        //   couch_S / couch_N → extends east (dx+1)
+        //   couch_E / couch_W → extends south (dy+1)
+        //   bed               → extends east (dx+1)
+        if (isPairedRole(role)) {
+            String ext = neighbourIndex(tile, 1);
+            if (ext != null && pal.all.contains(ext)) {
+                int[] extDir = pairedExtDir(roleFacing, role);
+                int ex = lx + extDir[0], ey = ly + extDir[1];
+                if (free(ex, ey)) {
+                    GisCells.appendTile(cell, rx + ex, ry + ey,
+                            cell.tileIndex(ext), roomId);
+                    grid[ex][ey] = surface ? SURFACE : TAKEN;
+                    placed.add(new int[]{ex, ey});
+                }
+            }
+        }
         return true;
+    }
+
+    /** Roles that are 2-tile paired sprites requiring an extension tile. */
+    private static boolean isPairedRole(String role) {
+        if (role == null) return false;
+        String f = familyOf(role);
+        return f.equals("couch") || f.equals("bed") || f.equals("bed_home");
+    }
+
+    /**
+     * Direction to place the extension tile based on the anchor's facing and role.
+     * Couches: S/N facing → extend east; E/W facing → extend south.
+     * Beds: always extend east.
+     */
+    private static int[] pairedExtDir(char facing, String role) {
+        String f = familyOf(role);
+        if (f.startsWith("bed")) return new int[]{1, 0};
+        return (facing == 'S' || facing == 'N') ? new int[]{1, 0} : new int[]{0, 1};
+    }
+
+    /** Returns the tile name with its trailing index offset by delta, or null. */
+    private static String neighbourIndex(String tile, int delta) {
+        int us = tile.lastIndexOf('_');
+        if (us < 0) return null;
+        try {
+            int idx = Integer.parseInt(tile.substring(us + 1));
+            if (idx + delta < 0) return null;
+            return tile.substring(0, us + 1) + (idx + delta);
+        } catch (NumberFormatException e) { return null; }
     }
 
     /** Facing of the object currently being placed, for the approach check. */

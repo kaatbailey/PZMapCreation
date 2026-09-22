@@ -38,3 +38,10 @@ map-output/html/map_data/mod_maps/PZGisImport/base_top/layer0.dzi
 *.jpg
 *.empty
 map-output/html/.placement.md.kate-swp
+*.json
+*.dzi
+*.dzi
+*.json
+my_spawnpoints.lua
+rooms.txt
+scan_rooms.fish
