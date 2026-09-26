@@ -45,6 +45,19 @@ public final class FurniturePlacer {
     private final Set<String> doorSquares;
     private final Set<String> windowSquares;
 
+    /**
+     * Squares carrying a north or west wall, cell-local "x,y".
+     *
+     * A room rectangle has four edges but not four walls. BuildingPlan leaves
+     * 55.4% of kitchen/living-room boundaries FULLY OPEN — the two rooms are one
+     * continuous space — so an edge is only a wall if a wall was actually built
+     * there. Without this, anything placed against a room edge could end up
+     * standing in the middle of an open-plan floor, and a wall-mounted piece
+     * would hang in mid-air with nothing behind it.
+     */
+    private final Set<String> northWalls;
+    private final Set<String> westWalls;
+
     // Current room, in cell-local coordinates.
     private int rx, ry, rw, rh, roomId;
     private boolean tinyRoom;   // room < 5x5: cap activities to avoid overcrowding
@@ -89,12 +102,15 @@ public final class FurniturePlacer {
             "workbench", "bench", "watercooler", "television");
 
     private FurniturePlacer(CellData cell, TilePalette pal, Random rng,
-                            Set<String> doorSquares, Set<String> windowSquares) {
+                            Set<String> doorSquares, Set<String> windowSquares,
+                            Set<String> northWalls, Set<String> westWalls) {
         this.cell = cell;
         this.pal = pal;
         this.rng = rng;
         this.doorSquares = doorSquares;
         this.windowSquares = windowSquares;
+        this.northWalls = northWalls;
+        this.westWalls = westWalls;
     }
 
     /**
@@ -104,15 +120,19 @@ public final class FurniturePlacer {
      * @param idx           room index list, parallel to planned
      * @param doorSquares   "x,y" keys of squares carrying a door
      * @param windowSquares "x,y" keys of squares carrying a window
+     * @param northWalls    "x,y" keys of squares carrying a north wall
+     * @param westWalls     "x,y" keys of squares carrying a west wall
      * @param bc            building class, chooses domestic vs commercial fit-out
      * @param rng           seeded per building
      */
     public static void place(CellData cell, TilePalette pal,
                              List<BuildingPlan.Room> planned, List<Integer> idx,
                              Set<String> doorSquares, Set<String> windowSquares,
+                             Set<String> northWalls, Set<String> westWalls,
                              BuildingClass bc, Random rng) {
 
-        FurniturePlacer fp = new FurniturePlacer(cell, pal, rng, doorSquares, windowSquares);
+        FurniturePlacer fp = new FurniturePlacer(cell, pal, rng,
+                doorSquares, windowSquares, northWalls, westWalls);
 
         // One tier per building; each room shifts at most one step from it, so
         // a building reads as a single establishment rather than a jumble.
@@ -144,6 +164,8 @@ public final class FurniturePlacer {
         placed.clear();
         lock.clear();
         claimed.clear();
+        tvPos = null;
+        seatPos = null;
         markDoorApproaches();
 
         switch (profile.strategy) {
@@ -157,7 +179,16 @@ public final class FurniturePlacer {
             case AUTHORED  -> authoredLayout(profile, density);
         }
 
-        if (!tinyRoom) decor(profile.decorBudget, density);
+        // Kitchens and living rooms get the wall-space decorator instead of the
+        // generic decor pass. Both carried decorBudget 0, so nothing has ever
+        // been placed in them — which is why the layouts could be tuned without
+        // decoration getting in the way. Every other room type is untouched.
+        if ("livingroom".equals(profile.stampRoomType)
+         || "kitchen".equals(profile.stampRoomType)) {
+            decorateWallSpace(profile.stampRoomType);
+        } else if (!tinyRoom) {
+            decor(profile.decorBudget, density);
+        }
         enforceCirculation();
     }
 
@@ -166,8 +197,14 @@ public final class FurniturePlacer {
      * A door that opens onto a filing cabinet is worse than an empty room.
      */
     private void markDoorApproaches() {
-        for (int lx = 0; lx < rw; lx++) {
-            for (int ly = 0; ly < rh; ly++) {
+        // Scanned one square PAST the rectangle on every side. carveEntrances
+        // puts a south door at r.y()+r.h() and an east door at r.x()+r.w(),
+        // which are outside the room rect, so a scan of the rect alone never
+        // saw them and furniture could be stood squarely in those doorways.
+        // mark() bounds-checks, so the out-of-range squares are no-ops and only
+        // the approach squares inside the room get claimed.
+        for (int lx = -1; lx <= rw; lx++) {
+            for (int ly = -1; ly <= rh; ly++) {
                 int wx = rx + lx, wy = ry + ly;
                 if (!doorSquares.contains(wx + "," + wy)) continue;
                 mark(lx, ly, KEEP_CLEAR);
@@ -846,6 +883,10 @@ public final class FurniturePlacer {
      *   confirmed pair. The inferred pair is a fallback that in practice never
      *   comes up — see the sprite-mix count in the test harness.
      *
+     * The microwave rides the same appliances_cooking_01 sheet, on the variant
+     * at base 26: _27 FacingN is recorded in LARGE_APPLIANCE_BANK, which fixes
+     * that group the same way _13 fixes the oven's.
+     *
      * appliances_cooking_01 — 4-cycle W, N, E, S; variants at base 10, 18, 26
      *   (every index congruent to 2 mod 4). Supported by _10 FacingW
      *   (HEAVY_KITCHEN), _21 FacingS and _27 FacingN (LARGE_APPLIANCE_BANK),
@@ -913,6 +954,12 @@ public final class FurniturePlacer {
                     "fixtures_sinks_01_9",          // S (confirmed)
                     "fixtures_sinks_01_8",          // E
                     "fixtures_sinks_01_10"          // W (confirmed)
+                },
+                "microwave", new String[]{
+                    "appliances_cooking_01_27",     // N (confirmed)
+                    "appliances_cooking_01_29",     // S
+                    "appliances_cooking_01_28",     // E
+                    "appliances_cooking_01_26"      // W
                 },
                 "shelves", new String[]{
                     "furniture_shelving_01_47",     // N (confirmed)
@@ -1267,32 +1314,25 @@ public final class FurniturePlacer {
      * falling back to something that does not face.
      */
     private void livingroomLayout(Density density) {
-        // Candidate {tvWall, seatWall} pairs. Prefer walls without doors, then
-        // the pairing with the most floor between them — a longer sightline
-        // reads better and leaves room to walk past.
-        List<char[]> pairs = new ArrayList<>(List.of(
-                new char[]{'N', 'S'}, new char[]{'S', 'N'},
-                new char[]{'W', 'E'}, new char[]{'E', 'W'}));
-        pairs.sort((a, b) -> {
+        // Candidate walls for the television, best first. The seat is no longer
+        // put on the opposite wall — see placeTvAndSeat — so only the screen's
+        // own wall matters here.
+        List<Character> walls = new ArrayList<>(List.of('S', 'E', 'N', 'W'));
+        walls.sort((a, b) -> {
             // A television on the south or east wall faces north or west, and
-            // those are the two sprites confirmed by inversion. South and east
-            // sprites are only inferred, so prefer the arrangements that never
-            // need them. Ordering only sets the order of attempts — a pair that
-            // cannot be placed still falls through to the next.
-            int measuredA = (a[0] == 'S' || a[0] == 'E') ? 0 : 1;
-            int measuredB = (b[0] == 'S' || b[0] == 'E') ? 0 : 1;
+            // those are the two sprites confirmed by inversion. The other two
+            // are inferred, so prefer the walls that never need them. Ordering
+            // only sets the order of attempts; a wall that cannot take it falls
+            // through to the next.
+            int measuredA = (a == 'S' || a == 'E') ? 0 : 1;
+            int measuredB = (b == 'S' || b == 'E') ? 0 : 1;
             if (measuredA != measuredB) return measuredA - measuredB;
-            int doorsA = (wallHasDoor(a[0]) ? 2 : 0) + (wallHasDoor(a[1]) ? 1 : 0);
-            int doorsB = (wallHasDoor(b[0]) ? 2 : 0) + (wallHasDoor(b[1]) ? 1 : 0);
-            if (doorsA != doorsB) return doorsA - doorsB;
-            int gapA = (a[0] == 'N' || a[0] == 'S') ? rh : rw;
-            int gapB = (b[0] == 'N' || b[0] == 'S') ? rh : rw;
-            return gapB - gapA;
+            return (wallHasDoor(a) ? 1 : 0) - (wallHasDoor(b) ? 1 : 0);
         });
 
         boolean paired = false;
-        for (char[] p : pairs) {
-            if (placeTvAndSeat(p[0], p[1])) { paired = true; break; }
+        for (char wall : walls) {
+            if (placeTvAndSeat(wall)) { paired = true; break; }
         }
 
         // Shelves are filler and only earn a place once the pair has landed.
@@ -1302,22 +1342,28 @@ public final class FurniturePlacer {
     }
 
     /**
-     * Put the television on tvWall and the seat directly opposite on seatWall,
-     * both on the same column (N/S pairing) or row (W/E pairing).
+     * Put the television against tvWall and the seat a short way out in front
+     * of it, looking back.
      *
-     * Offsets are tried from the middle of the wall outward so the arrangement
-     * sits centred rather than jammed into whichever corner came first.
+     * The seat used to go on the OPPOSITE wall, which is correct in a small
+     * room and absurd in a long one — a 14-deep living room sat the armchair
+     * twelve squares from the screen. Nobody could read that television. The
+     * seat is now placed 3 squares out (two clear squares between) or 2 (one
+     * clear square) and nothing further, which is roughly where a real room
+     * puts it. That means the seat usually stands off a wall, which is fine:
+     * couches do that.
+     *
+     * Offsets along the wall are tried from the middle outward so the
+     * arrangement sits centred rather than jammed into a corner.
      */
-    private boolean placeTvAndSeat(char tvWall, char seatWall) {
-        int tvLine   = interiorLine(tvWall);
-        int seatLine = interiorLine(seatWall);
-        if (tvLine < 0 || seatLine < 0) return false;
-        // Need at least one square of floor between them or nobody can walk.
-        if (Math.abs(tvLine - seatLine) < 2) return false;
+    private boolean placeTvAndSeat(char tvWall) {
+        int tvLine = interiorLine(tvWall);
+        if (tvLine < 0) return false;
 
         boolean ns = (tvWall == 'N' || tvWall == 'S');
-        char tvFacing   = opposite(tvWall);    // N wall -> faces S, into the room
-        char seatFacing = opposite(seatWall);
+        char tvFacing   = opposite(tvWall);   // N wall -> faces S, into the room
+        char seatFacing = tvWall;             // and the seat looks back at it
+        int[] out = dirOf(tvFacing);
 
         int span = ns ? rw : rh;
         int mid  = span / 2;
@@ -1327,8 +1373,14 @@ public final class FurniturePlacer {
                 if (step == 0 && sign == -1) continue;
                 int off = mid + step * sign;
                 if (off < 1 || off > span - 2) continue;
-                if (commitTvAndSeat(ns, tvLine, seatLine, off, tvFacing, seatFacing))
-                    return true;
+
+                int tvx = ns ? off : tvLine, tvy = ns ? tvLine : off;
+                // Prefer a little breathing room, fall back to close up.
+                for (int dist : new int[]{3, 2}) {
+                    int sx = tvx + out[0] * dist, sy = tvy + out[1] * dist;
+                    if (commitTvAndSeat(tvx, tvy, sx, sy, dist, tvFacing, seatFacing))
+                        return true;
+                }
             }
         }
         return false;
@@ -1341,10 +1393,25 @@ public final class FurniturePlacer {
      * the cell cannot be taken back, so a television placed before discovering
      * the seat will not fit would leave a screen pointed at an empty wall.
      */
-    private boolean commitTvAndSeat(boolean ns, int tvLine, int seatLine, int off,
+    private boolean commitTvAndSeat(int tvx, int tvy, int sx, int sy, int dist,
                                     char tvFacing, char seatFacing) {
-        int tvx = ns ? off : tvLine,   tvy = ns ? tvLine : off;
-        int sx  = ns ? off : seatLine, sy  = ns ? seatLine : off;
+        if (!inRoom(sx, sy)) return false;
+
+        // Every square between the two must be clear, or the seat is looking at
+        // the back of something.
+        int[] step = dirOf(tvFacing);
+        for (int k = 1; k < dist; k++) {
+            int bx = tvx + step[0] * k, by = tvy + step[1] * k;
+            if (!inRoom(bx, by)) return false;
+            if (grid[bx][by] != FREE && grid[bx][by] != KEEP_CLEAR) return false;
+        }
+
+        // The television needs a wall behind it: a screen adrift in the middle
+        // of an open-plan floor is the thing that reads as broken. The seat is
+        // not gated — a couch standing off a wall looks perfectly normal, and
+        // requiring walls at BOTH ends cost 11% of living rooms their television
+        // entirely, which is a far worse defect than a couch in open floor.
+        if (!hasWallBehind(tvx, tvy, opposite(tvFacing))) return false;
 
         if (!canPlace(tvx, tvy, tvFacing, "table")) return false;
 
@@ -1368,6 +1435,10 @@ public final class FurniturePlacer {
         put(sx, sy, seatTile, false, seatRole);
         claimed.add("television");
         claimed.add("seat");
+
+        // Remembered so the decorator can keep the sightline between them clear.
+        tvPos   = new int[]{tvx, tvy};
+        seatPos = new int[]{sx, sy};
         return true;
     }
 
@@ -1411,12 +1482,40 @@ public final class FurniturePlacer {
      * window. Standing a bookcase in front of either is the thing that makes a
      * room look machine-filled rather than lived in.
      */
+    /**
+     * True when a wall was actually built behind a piece at (lx, ly).
+     *
+     * PZ walls are edge objects: a north wall on square (x, y) is the boundary
+     * between (x, y-1) and (x, y), so the square carrying a room's south
+     * boundary is the one BELOW its last interior row, and likewise east. The
+     * offsets here are the same ones wallBehindHasOpening uses, so the two
+     * checks always look at the same square.
+     *
+     * Used by the DECORATOR and by wall art only, not by the furnishing pass.
+     * An earlier version of this gated the television and the seat as well and
+     * deleted them from every living room, because the offsets were computed
+     * for furniture sitting one square inside the wall. They now sit ON it, so
+     * these offsets follow: a north or west wall is carried by the piece's own
+     * square, a south or east wall by the next square out. The furnishing pass
+     * stays ungated until a build confirms the geometry.
+     */
+    private boolean hasWallBehind(int lx, int ly, char wall) {
+        int wx = rx + lx, wy = ry + ly;
+        return switch (wall) {
+            case 'N' -> northWalls.contains(wx + "," + wy);
+            case 'S' -> northWalls.contains(wx + "," + (wy + 1));
+            case 'W' -> westWalls.contains(wx + "," + wy);
+            case 'E' -> westWalls.contains((wx + 1) + "," + wy);
+            default  -> false;
+        };
+    }
+
     private boolean wallBehindHasOpening(int lx, int ly, char wall) {
         int wx = rx + lx, wy = ry + ly;
         switch (wall) {
-            case 'N' -> wy -= 1;
+            case 'N' -> { }            // the wall sits on this very square
             case 'S' -> wy += 1;
-            case 'W' -> wx -= 1;
+            case 'W' -> { }            // likewise
             case 'E' -> wx += 1;
             default  -> { return false; }
         }
@@ -1457,7 +1556,12 @@ public final class FurniturePlacer {
 
                     int lx = ns ? off : line, ly = ns ? line : off;
                     if (!free(lx, ly)) continue;
+                    if (!hasWallBehind(lx, ly, wall)) continue;   // open boundary
                     if (wallBehindHasOpening(lx, ly, wall)) continue;
+                    // In a narrow room a wall square can sit squarely between
+                    // the seat and the screen. A bookcase there would undo the
+                    // one rule the room is built around.
+                    if (inSightline(lx, ly)) continue;
 
                     // Something has to be able to walk up to it.
                     int[] f = dirOf(facing);
@@ -1477,13 +1581,349 @@ public final class FurniturePlacer {
         return false;
     }
 
+    // ---------------------------------------------------------------
+    // Wall-space decorator (kitchens and living rooms)
+    // ---------------------------------------------------------------
+
+    /**
+     * Where the television and the seat ended up, room-local, or null outside a
+     * furnished living room. The decorator reads these to keep the line between
+     * them clear — a bookcase parked between the couch and the screen would undo
+     * the one rule this room exists to satisfy.
+     */
+    private int[] tvPos, seatPos;
+
+    /**
+     * The 2-tile painting from OFFICE_PAINTING. It is the only wall-decoration
+     * sprite in this codebase with a recorded orientation, and it is the
+     * attachedN variant, so it goes on north walls only. Other walls would need
+     * their own sprites identified before art can hang on them.
+     */
+    private static final String[] WALL_ART = {
+        "location_entertainment_gallery_01_24",
+        "location_entertainment_gallery_01_25"
+    };
+
+    /**
+     * Wall-mounted shelving, as two-tile pairs with confirmed orientation.
+     *
+     * A free-standing bookcase in a kitchen reads as a mistake, but a shelf on
+     * the wall is exactly right — so the kitchen gets one of these instead.
+     *
+     * Both pairs are taken verbatim from VENDING_ALCOVE, which records their
+     * facing and their placement: the set puts the FacingS pair along dy=0 (its
+     * north edge) and the FacingE pair down dx=0 (its west edge). That fixes the
+     * convention — a wall shelf sits on the interior square next to the wall,
+     * facing into the room, the same as a counter. Only these two walls have a
+     * recorded sprite, so the shelf goes on the north or west wall or nowhere.
+     */
+    private static final String[] WALL_SHELF_N = {   // runs east-west, FacingS
+        "furniture_shelving_01_26", "furniture_shelving_01_27"
+    };
+    /**
+     * Single wooden wall shelf, FacingE, so it hangs on a west wall.
+     *
+     * BREAKROOM_ROUND_TABLES records _21 as "Shelves FacingE (Middle)" and
+     * places it at dx=0 — its west edge. This is the piece that was turning up
+     * mid-air in living rooms before the bookcase sprites were named, which is
+     * also how we know what it looks like: a wooden plank carrying books.
+     * Its neighbour _20 is "Corner A" and is deliberately NOT used — a corner
+     * piece hung along a flat wall is exactly the "corner shelves not even in a
+     * corner" problem.
+     */
+    private static final String WALL_SHELF_WOOD_W = "furniture_shelving_01_21";
+
+    /**
+     * Table lamp, recorded in FILING_LAMP_DESK as "Green vintage lamp on desk
+     * (IsTableTop)" — so it is known to stack on a table rather than stand on
+     * the floor. There is no confirmed free-standing floor lamp sprite.
+     */
+    private static final String TABLE_LAMP = "lighting_indoor_02_35";
+
+    /**
+     * Decorate whatever wall space the furnishing pass left over.
+     *
+     * The furnishing rules run first and are never touched: this only ever
+     * writes to squares that came out FREE, so a finished kitchen or living
+     * room keeps exactly the layout it had. Everything lands flat against a
+     * wall, facing into the room, with no door or window behind it.
+     */
+    private void decorateWallSpace(String roomType) {
+        if ("kitchen".equals(roomType)) decorateKitchen();
+        else                            decorateLivingroom();
+    }
+
+    /**
+     * A kitchen is decorated with more kitchen — cabinets, the small appliances
+     * that stand on them, cupboards above, a shelf on the wall, and an island
+     * when there is floor to spare.
+     *
+     * Nothing free-standing that belongs to another room: no armchairs, no side
+     * tables, and no storage shelving on the floor. Those turned a fitted
+     * kitchen into a junk room.
+     */
+    private void decorateKitchen() {
+        List<int[]> slots = openWallSlots();
+        java.util.Collections.shuffle(slots, rng);
+
+
+        // Extra runs of cabinet along whatever wall the counter run left.
+        int want = 1 + rng.nextInt(3), done = 0;
+        for (int[] s : slots) {
+            if (done >= want) break;
+            int lx = s[0], ly = s[1];
+            char facing = opposite((char) s[2]);
+            if (!free(lx, ly)) continue;
+            String cabinet = DIRECTIONAL_OVERRIDES.get("counter")[facingIdx(facing)];
+            roleFacing = facing;
+            if (!put(lx, ly, cabinet, true, "counter")) continue;
+            dressCounter(lx, ly, facing);
+            done++;
+        }
+
+        placeKitchenIsland();
+        hangWallArt();
+    }
+
+    /**
+     * Put ONE thing on the cabinet: an appliance standing on the worktop, or a
+     * cupboard on the wall above it — never both.
+     *
+     * Stacking a cupboard onto a square that already holds a microwave drew the
+     * two as a tower, the cupboard apparently balanced on the appliance. They
+     * occupy different heights in a real kitchen but the same square here, so
+     * only one of them goes on.
+     */
+    private void dressCounter(int lx, int ly, char facing) {
+        switch (rng.nextInt(4)) {
+            case 0 -> {
+                // Only _27, and only on a north-facing worktop. That is the one
+                // microwave sprite with a recorded facing (LARGE_APPLIANCE_BANK);
+                // the rest of the group was inferred and came out perpendicular
+                // to the cabinet in game.
+                if (facing == 'N') stack(lx, ly, "appliances_cooking_01_27");
+            }
+            case 1 -> {
+                String toaster = pal.pickFrom("toaster", rng);
+                if (toaster != null) stack(lx, ly, toaster);
+            }
+            case 2 -> {
+                // Overhead cupboards are indexed by the WALL they hang on, not
+                // by the way they look — the same convention as wallN/doorN and
+                // the palette's own shelvesN/shelvesW entries. Passing the
+                // inward facing hung them backwards, glass and knob to the wall.
+                // The tile counts corroborate it: overhead_N has 5 tiles and the
+                // other three have 1, matching how often a north wall is used.
+                String cupboard = resolve("overhead", opposite(facing));
+                if (cupboard != null) stack(lx, ly, cupboard);
+            }
+            default -> { }   // a bare worktop is fine
+        }
+    }
+
+    /**
+     * An island of cabinets down the middle, only in a kitchen big enough that
+     * losing the floor does not matter. Needs a clear walkway on both sides or
+     * it is a wall, not an island.
+     */
+    private void placeKitchenIsland() {
+        if (rw < 9 || rh < 9) return;
+        int cx = rw / 2 - 1, cy = rh / 2;
+        int len = 2 + rng.nextInt(2);
+        for (int k = 0; k < len; k++) {
+            if (!free(cx + k, cy) || !free(cx + k, cy - 1) || !free(cx + k, cy + 1))
+                return;
+        }
+        String cabinet = DIRECTIONAL_OVERRIDES.get("counter")[facingIdx('S')];
+        for (int k = 0; k < len; k++) {
+            roleFacing = 'S';
+            if (put(cx + k, cy, cabinet, true, "counter") && rng.nextDouble() < 0.4) {
+                String pot = pal.pickFrom("plant_table", rng);
+                if (pot != null) stack(cx + k, cy, pot);
+            }
+        }
+    }
+
+    /**
+     * A living room is decorated with the things people put in one: art on the
+     * wall, plants, a lamp on a side table, a shelf on the wall.
+     */
+    private void decorateLivingroom() {
+        List<int[]> slots = openWallSlots();
+        java.util.Collections.shuffle(slots, rng);
+
+        List<String> wanted = new ArrayList<>();
+        wanted.add("lamptable");
+        wanted.add("plant");
+        if (rng.nextBoolean()) wanted.add("plant");
+
+        for (int[] s : slots) {
+            if (wanted.isEmpty()) break;
+            int lx = s[0], ly = s[1];
+            if (!free(lx, ly)) continue;
+            if (inSightline(lx, ly)) continue;     // never between seat and screen
+            if (placeDecoration(wanted.get(0), lx, ly, opposite((char) s[2])))
+                wanted.remove(0);
+        }
+
+        hangWallArt();
+    }
+
+    /**
+     * Interior squares that back onto a wall and are worth decorating: empty,
+     * nothing blocked behind them, and open floor in front so the piece can be
+     * seen and walked up to. Returns {lx, ly, wall} triples.
+     */
+    private List<int[]> openWallSlots() {
+        List<int[]> out = new ArrayList<>();
+        for (char wall : new char[]{'N', 'W', 'S', 'E'}) {
+            int line = interiorLine(wall);
+            if (line < 1) continue;
+            boolean ns = (wall == 'N' || wall == 'S');
+            int span = ns ? rw : rh;
+            for (int off = 1; off <= span - 2; off++) {
+                int lx = ns ? off : line, ly = ns ? line : off;
+                if (!free(lx, ly)) continue;
+                if (!hasWallBehind(lx, ly, wall)) continue;   // open boundary
+                if (wallBehindHasOpening(lx, ly, wall)) continue;
+                int[] f = dirOf(opposite(wall));
+                int fx = lx + f[0], fy = ly + f[1];
+                if (!inRoom(fx, fy)) continue;
+                if (grid[fx][fy] != FREE && grid[fx][fy] != KEEP_CLEAR) continue;
+                out.add(new int[]{lx, ly, wall});
+            }
+        }
+        return out;
+    }
+
+    /** True when (lx, ly) sits on the line of sight between screen and seat. */
+    private boolean inSightline(int lx, int ly) {
+        if (tvPos == null || seatPos == null) return false;
+        if (tvPos[0] == seatPos[0] && lx == tvPos[0]) {
+            int lo = Math.min(tvPos[1], seatPos[1]), hi = Math.max(tvPos[1], seatPos[1]);
+            return ly > lo && ly < hi;
+        }
+        if (tvPos[1] == seatPos[1] && ly == tvPos[1]) {
+            int lo = Math.min(tvPos[0], seatPos[0]), hi = Math.max(tvPos[0], seatPos[0]);
+            return lx > lo && lx < hi;
+        }
+        return false;
+    }
+
+    /**
+     * One decoration against a wall, facing into the room.
+     *
+     * Every sprite here is either non-directional or comes from a table already
+     * confirmed in game — no role is resolved whose palette group is known to
+     * mix orientations or wall-mounted pieces.
+     */
+    private boolean placeDecoration(String piece, int lx, int ly, char facing) {
+        switch (piece) {
+            case "bookshelf" -> {
+                String tile = DIRECTIONAL_OVERRIDES.get("shelves")[facingIdx(facing)];
+                roleFacing = facing;
+                if (!put(lx, ly, tile, false, "shelves")) return false;
+                claimed.add("shelves");
+                return true;
+            }
+            case "lamptable" -> {
+                // The same low table the television stands on: the one sprite of
+                // its kind already proven to look right in a finished room. The
+                // lamp is the table-top lamp recorded in FILING_LAMP_DESK.
+                roleFacing = facing;
+                if (!put(lx, ly, TV_TABLE, true, "table")) return false;
+                stack(lx, ly, TABLE_LAMP);
+                return true;
+            }
+            case "plant" -> {
+                String tile = pal.pickFrom("plant_floor", rng);
+                if (tile == null) return false;
+                roleFacing = facing;
+                return put(lx, ly, tile, false, null);   // a plant has no front
+            }
+            default -> { return false; }
+        }
+    }
+
+    /**
+     * Hang a wall shelf: the wooden plank on a west wall for preference, the
+     * two-tile metal rack on a north wall otherwise. Those are the only two
+     * orientations with a recorded sprite, so it goes on one of those walls or
+     * nowhere.
+     *
+     * What ends up ON the shelf is not decided here. Container contents in this
+     * game come from the loot distributions, which key on the room's name and
+     * the container's type; this pipeline writes tiles and room definitions, not
+     * items. A shelf standing in a room the map declares as a kitchen draws from
+     * the kitchen tables, which is where cookery books come from.
+     */
+    private boolean hangWoodWallShelf() {
+        // Wooden plank on the west wall first — it is the piece that reads as a
+        // shelf of cookery books rather than a pantry rack, and it needs only
+        // one square.
+        for (int ly = 1; ly <= rh - 2; ly++) {
+            if (!wallShelfSquareOk(1, ly, 'W')) continue;
+            putWallShelf(1, ly, WALL_SHELF_WOOD_W);
+            claimed.add("shelves");
+            return true;
+        }
+        // Otherwise the two-tile metal rack on the north wall.
+        for (int lx = 1; lx + 1 <= rw - 2; lx++) {
+            if (!wallShelfSquareOk(lx, 1, 'N') || !wallShelfSquareOk(lx + 1, 1, 'N')) continue;
+            putWallShelf(lx,     1, WALL_SHELF_N[0]);
+            putWallShelf(lx + 1, 1, WALL_SHELF_N[1]);
+            claimed.add("shelves");
+            return true;
+        }
+        return false;
+    }
+
+    private boolean wallShelfSquareOk(int lx, int ly, char wall) {
+        if (!free(lx, ly)) return false;
+        if (wallBehindHasOpening(lx, ly, wall)) return false;
+        if (inSightline(lx, ly)) return false;   // not between seat and screen
+        int[] f = dirOf(opposite(wall));
+        int fx = lx + f[0], fy = ly + f[1];
+        if (!inRoom(fx, fy)) return false;
+        return grid[fx][fy] == FREE || grid[fx][fy] == KEEP_CLEAR;
+    }
+
+    private void putWallShelf(int lx, int ly, String tile) {
+        GisCells.appendTile(cell, rx + lx, ry + ly, cell.tileIndex(tile), roomId);
+        grid[lx][ly] = TAKEN;
+        placed.add(new int[]{lx, ly});
+    }
+
+    /**
+     * Hang the painting on the north wall, where two adjacent squares are clear
+     * of doors and windows and nothing tall stands in front of it.
+     */
+    private void hangWallArt() {
+        // Row 0 is the north wall row: a piece flush against that wall sits on
+        // the very square that carries it.
+        for (int lx = 1; lx + 1 <= rw - 2; lx++) {
+            if (!artSquareOk(lx, 0) || !artSquareOk(lx + 1, 0)) continue;
+            stackWorld(rx + lx,     ry, WALL_ART[0]);
+            stackWorld(rx + lx + 1, ry, WALL_ART[1]);
+            return;
+        }
+    }
+
+    private boolean artSquareOk(int lx, int ly) {
+        if (!inRoom(lx, ly)) return false;
+        if (!hasWallBehind(lx, ly, 'N')) return false;   // no wall to hang on
+        if (wallBehindHasOpening(lx, ly, 'N')) return false;
+        byte st = grid[lx][ly];
+        return st == FREE || st == KEEP_CLEAR;   // not hidden behind furniture
+    }
+
     /** The interior row or column running alongside the given wall. */
     private int interiorLine(char wall) {
         return switch (wall) {
-            case 'N' -> 1;
-            case 'S' -> rh - 2;
-            case 'W' -> 1;
-            case 'E' -> rw - 2;
+            case 'N' -> 0;
+            case 'S' -> rh - 1;
+            case 'W' -> 0;
+            case 'E' -> rw - 1;
             default  -> -1;
         };
     }
@@ -1540,8 +1980,9 @@ public final class FurniturePlacer {
                 int step = set.unique ? 1 : set.w + aisle;
                 for (int ux = 1; ux + set.w <= rw - 1; ux += step) {
                     if (thin && rng.nextDouble() < density.skip) continue;
-                    if (hasKeepClear(ux, 1, set.w, set.h)) continue;
-                    if (stampSet(set, ux, 1, 'S')) {
+                    if (hasKeepClear(ux, 0, set.w, set.h)) continue;
+                    if (blocksWindow(set, ux, 0, 'N')) continue;
+                    if (stampSet(set, ux, 0, 'S')) {
                         placed = true;
                         if (set.unique) break;
                     }
@@ -1550,11 +1991,12 @@ public final class FurniturePlacer {
             case 'S' -> {
                 // S wall → furniture faces north into the room
                 int step = set.unique ? 1 : set.w + aisle;
-                int ly = rh - 1 - set.h;
-                if (ly < 1) return false;
+                int ly = rh - set.h;
+                if (ly < 0) return false;
                 for (int ux = 1; ux + set.w <= rw - 1; ux += step) {
                     if (thin && rng.nextDouble() < density.skip) continue;
                     if (hasKeepClear(ux, ly, set.w, set.h)) continue;
+                    if (blocksWindow(set, ux, ly, 'S')) continue;
                     if (stampSet(set, ux, ly, 'N')) {
                         placed = true;
                         if (set.unique) break;
@@ -1566,8 +2008,9 @@ public final class FurniturePlacer {
                 int step = set.unique ? 1 : set.h + aisle;
                 for (int uy = 1; uy + set.h <= rh - 1; uy += step) {
                     if (thin && rng.nextDouble() < density.skip) continue;
-                    if (hasKeepClear(1, uy, set.w, set.h)) continue;
-                    if (stampSet(set, 1, uy, 'E')) {
+                    if (hasKeepClear(0, uy, set.w, set.h)) continue;
+                    if (blocksWindow(set, 0, uy, 'W')) continue;
+                    if (stampSet(set, 0, uy, 'E')) {
                         placed = true;
                         if (set.unique) break;
                     }
@@ -1576,11 +2019,12 @@ public final class FurniturePlacer {
             case 'E' -> {
                 // E wall → furniture faces west into the room
                 int step = set.unique ? 1 : set.h + aisle;
-                int lx = rw - 1 - set.w;
-                if (lx < 1) return false;
+                int lx = rw - set.w;
+                if (lx < 0) return false;
                 for (int uy = 1; uy + set.h <= rh - 1; uy += step) {
                     if (thin && rng.nextDouble() < density.skip) continue;
                     if (hasKeepClear(lx, uy, set.w, set.h)) continue;
+                    if (blocksWindow(set, lx, uy, 'E')) continue;
                     if (stampSet(set, lx, uy, 'W')) {
                         placed = true;
                         if (set.unique) break;
@@ -1612,6 +2056,35 @@ public final class FurniturePlacer {
             case 'E' -> { int x = rw-2; for (int y = 0; y < rh; y++) if (inRoom(x,y) && grid[x][y] == KEEP_CLEAR) return true; }
         }
         return false;
+    }
+
+    /**
+     * True when a TALL piece of this set would stand in front of a window.
+     *
+     * stampWallRun only ever checked for doors, so a counter run was free to
+     * park its refrigerator across a window — you could stand outside and look
+     * through the glass at the back of the fridge. Counters and cookers are
+     * worktop height and sit under a window perfectly happily, which is why
+     * this rejects on height rather than on the whole footprint.
+     */
+    private boolean blocksWindow(FurnitureSet set, int ux, int uy, char wall) {
+        for (FurnitureSet.Tile t : set.tiles) {
+            if (t.onTop() || t.wallMounted()) continue;
+            if (!isTallPiece(t)) continue;
+            if (wallBehindHasOpening(ux + t.dx(), uy + t.dy(), wall)) return true;
+        }
+        return false;
+    }
+
+    /** Pieces tall enough to cover a window. */
+    private static boolean isTallPiece(FurnitureSet.Tile t) {
+        String r = t.role();
+        if (r != null) return r.startsWith("fridge") || r.startsWith("shelves")
+                           || r.startsWith("wardrobe");
+        String n = t.tile();
+        return n != null && (n.startsWith("appliances_refrigeration")
+                          || n.startsWith("furniture_shelving")
+                          || n.startsWith("furniture_storage"));
     }
 
     /** True if any square in the footprint (ux..ux+w, uy..uy+h) is KEEP_CLEAR. */

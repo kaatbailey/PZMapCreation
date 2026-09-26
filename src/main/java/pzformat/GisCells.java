@@ -328,7 +328,26 @@ public final class GisCells {
                                     cell.setSquare(x, y, 0, cell.tilesAt(x, y, 0), ri);
                     }
 
-                    carveInterior(cell, pal, planned, idx, brng);
+                    // Which of this building's room edges are actually walled.
+                    // A room rect has four edges but BuildingPlan leaves many
+                    // kitchen/living-room boundaries fully open, so furniture
+                    // must not treat every edge as something to lean against.
+                    java.util.Set<String> northWalls = new java.util.HashSet<>();
+                    java.util.Set<String> westWalls  = new java.util.HashSet<>();
+                    for (int sx = Math.max(0, bx - 1);
+                         sx < Math.min(256, bx + fr.w() + 2); sx++)
+                        for (int sy = Math.max(0, by - 1);
+                             sy < Math.min(256, by + fr.h() + 2); sy++) {
+                            int gsx = ox + sx, gsy = oy + sy;
+                            if (gsx < 0 || gsy < 0
+                                    || gsx >= g.width || gsy >= g.height) continue;
+                            if (g.northWall[gsx][gsy]) northWalls.add(sx + "," + sy);
+                            if (g.westWall[gsx][gsy])  westWalls.add(sx + "," + sy);
+                        }
+
+                    java.util.Set<String> interiorDoors = new java.util.HashSet<>();
+                    carveInterior(cell, pal, planned, idx, brng,
+                            northWalls, westWalls, interiorDoors);
                     TilePalette.WallSkin ceSkin = skins.isEmpty() ? null
                             : skins.get((int) (Math.abs((long) SEED * 131 + bi) % skins.size()));
                     java.util.Set<String> doorSquares = carveEntrances(cell, pal, planned, idx, bx, by,
@@ -339,8 +358,12 @@ public final class GisCells {
                     java.util.Set<String> windowSquares =
                             carveWindows(cell, pal, bx, by, fr.w(), fr.h(), g, ox, oy,
                                     ceSkin, wnIdx, wwIdx, brng, doorSquares);
+                    // Exterior doors plus interior ones: both must stay clear.
+                    java.util.Set<String> allDoors = new java.util.HashSet<>(doorSquares);
+                    allDoors.addAll(interiorDoors);
                     FurniturePlacer.place(cell, pal, planned, idx,
-                            doorSquares, windowSquares, BuildingClass.of(b), brng);
+                            allDoors, windowSquares, northWalls, westWalls,
+                            BuildingClass.of(b), brng);
 
                     // One building, all its rooms. The format models this and
                     // we were writing one index per entry.
@@ -892,7 +915,10 @@ public final class GisCells {
      */
     static void carveInterior(CellData cell, TilePalette pal,
                               List<BuildingPlan.Room> planned,
-                              List<Integer> idx, Random rng) {
+                              List<Integer> idx, Random rng,
+                              java.util.Set<String> outNorthWalls,
+                              java.util.Set<String> outWestWalls,
+                              java.util.Set<String> outDoors) {
         if (planned.size() < 2 || pal.interiorWallNorth == null) return;
 
         int wallN = cell.tileIndex(pal.interiorWallNorth);
@@ -981,7 +1007,18 @@ public final class GisCells {
         }
 
         for (int[] wsq : walls) {
+            // Record the boundary for the furniture pass. Door squares are
+            // included: a door still marks a wall line, and FurniturePlacer
+            // filters those separately so nothing is stood in a doorway.
+            if (wsq[2] == 1) outNorthWalls.add(wsq[0] + "," + wsq[1]);
+            else             outWestWalls.add(wsq[0] + "," + wsq[1]);
+
             boolean door = doorAt.contains(wsq[0] + "," + wsq[1] + "," + wsq[2]);
+            // Report interior doorways too. carveEntrances only reports the
+            // EXTERIOR doors, so nothing ever told the furniture pass about
+            // these and it was free to stand a cabinet in an internal doorway.
+            if (door) outDoors.add(wsq[0] + "," + wsq[1]);
+
             int tile = wsq[2] == 1 ? (door ? doorN : wallN) : (door ? doorW : wallW);
             appendTile(cell, wsq[0], wsq[1], tile, roomIndexOf(idx, wsq[3]));
 

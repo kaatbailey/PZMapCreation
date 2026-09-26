@@ -420,3 +420,194 @@ Full list as of session 5, roughly by visual impact:
 - Flat roof object tiles (92 usable roofs_03_* tiles, need vanilla measurement)
 - Wall skins for non-residential buildings (concrete/brick for FLAT_ROOF)
 - Port GisCells + furniture system to C++ (PZMapMaker)
+
+# Furnishing & decoration — session state
+
+Paste into STATE.md. Covers `FurniturePlacer`, `FurnitureSet` and the wall/door
+data now passed from `GisCells`.
+
+---
+
+## §A The wall line — the bug that hid behind everything else
+
+**A room rect's flush line is 0 / rh-1 / 0 / rw-1, not 1 / rh-2 / 1 / rw-2.**
+
+`stampWallRun`, `interiorLine` and the decorator all placed furniture one square
+inside the wall on every side. Nothing was ever flush. It read as "a bit of a
+gap" on a counter run and went unnoticed for weeks; it only became obvious when
+the decorator added a second row of cabinets and left a one-tile canyon between
+them that a character could not walk through.
+
+Confirmed twice, independently:
+
+- `perimeter()`'s lines table already used `{1,0}`, `{1,rh-1}`, `{0,1}`,
+  `{rw-1,1}` — and perimeter runs were the only placements ever observed flush
+  against a wall in game.
+- `carveEntrances` puts a north door at `r.y()`, a **south door at
+  `r.y()+r.h()`**, a west door at `r.x()` and an **east door at `r.x()+r.w()`**.
+  South and east doors are one square PAST the rectangle.
+
+So walls sit at `ry`, `ry+rh`, `rx`, `rx+rw`, and PZ walls are edge objects: a
+north wall on square (x,y) is the boundary between (x,y-1) and (x,y). A piece
+flush against a north or west wall therefore sits ON the square carrying that
+wall; against a south or east wall it sits on the last interior row/column.
+
+Consequences that had to be fixed at the same time:
+
+- `markDoorApproaches` only scanned inside the rect, so it never saw south or
+  east doors. Harmless while furniture was one square in; with everything flush
+  it would park a counter in the doorway. It now scans one square past on every
+  side (`mark()` bounds-checks, so the outside squares are no-ops).
+- `hangWallArt` was still scanning row 1 and silently produced 0% art until
+  moved to row 0.
+
+## §B A room edge is not a wall
+
+`BuildingPlan.openBetween` leaves **55.4% of kitchen/living-room boundaries
+fully open** — no wall built. A room rect has four edges but often only two or
+three walls. Furniture leaning on an unwalled edge stands in the middle of an
+open-plan floor, and anything wall-MOUNTED hangs in mid-air.
+
+`GisCells` now collects the walls that actually exist (exterior from
+`g.northWall`/`g.westWall`, interior reported back by `carveInterior`) and
+passes them to `FurniturePlacer.place()`. `hasWallBehind()` gates placement.
+
+**Gated:** decorator slots, wall art, the living-room bookcase, the television.
+**Not gated:** the seat. Requiring walls at both ends of the TV/seat pair cost
+11% of living rooms their television entirely — a far worse defect than a couch
+standing in open floor, which looks normal. A screen adrift does not.
+
+`carveInterior` now also reports its **interior door squares**. `carveEntrances`
+only ever returned exterior doors, so nothing told the furniture pass about
+internal doorways and it could stand a cabinet in one.
+
+## §C Sprite sheet orientations — measured, not assumed
+
+Four wrong guesses this session. The rule that emerged: **derive the order from
+facing labels already recorded in `FurnitureSet`, cross-check across at least
+two groups on the same sheet, and never trust a label inferred from a set's
+NAME.** ("`_7` = FacingS" came from the old set being called `LIVINGROOM_TV_N`
+and was simply wrong; every table built on it aimed screens at walls.)
+
+| Sheet | Order | Anchors |
+|---|---|---|
+| `fixtures_counters_01` | **8 per group**: (corner, straight) per facing, N,E,S,W | `_40`/`_41`/`_47`, `_53`/`_55`, `_33`/`_35`/`_37` |
+| `fixtures_sinks_01` | N,E,S,W at base 7 | `_7`=N, `_9`=S, `_10`=W |
+| `appliances_refrigeration_01` | S,E,N,W at multiples of 4 | `_1`,`_9`,`_49`=E; `_3`,`_51`,`_31`=W; `_28`=S |
+| `appliances_cooking_01` | W,N,E,S at bases ≡2 (mod 4) | `_10`=W, `_13`=S, `_21`=S, `_27`=N |
+| `appliances_television_01` | S,E,N,W at multiples of 4 | `_6`=N, `_7`=W (**by inversion**) |
+| `furniture_shelving_01` | S,E,W,N at multiples of 4 | `_40`=S, `_41`=E, `_44`=S, `_47`=N |
+
+**Inversion is a better measurement than reading a sprite.** The seat's facing
+is palette-authoritative and the pair is placed facing each other by
+construction, so "screen aimed exactly away from the seat" proves the emitted
+sprite renders opposite to what was asked. Reading a 32px sprite by eye got it
+backwards twice; inversion got it right first time.
+
+**Where a table is partly inferred, bias placement toward the confirmed
+entries.** The TV prefers south/east walls so it faces north/west and uses only
+`_6`/`_7`; the inferred pair is never reached in 48,400 rooms.
+
+### Roles that must NOT be resolved from the palette
+
+- **`shelves`** — the group mixes floor bookcases (`_40.._47`) with wall-mounted
+  planks (`_20` "Corner A", `_21` "Middle", `_24.._27` metal). A wall sprite on
+  a floor square hangs in mid-air. Use named sprites.
+- **`television`**, **`oven`**, **`counter`**, **`sink`**, **`fridge`**,
+  **`microwave`** — no directional sub-groups exist, so `resolve()` returns a
+  random facing. All have entries in `DIRECTIONAL_OVERRIDES`.
+- **`overhead`** — DOES have real directional groups, but they are indexed by
+  the **wall the cupboard hangs on**, not by how it looks: the `wallN`/`doorN`/
+  `shelvesN` convention, not the `chair_N` one. Pass `opposite(facing)`. Tile
+  counts corroborate: `overhead_N`=5, the others 1 each.
+
+## §D Room rules now enforced by test
+
+- **Kitchen gets ONE kitchen.** `FurnitureSet.provides(...)` declares fixture
+  classes; a room tracks `claimed` and refuses any set whose class it already
+  has. `unique()` stops repeats along ONE wall; `provides()` stops duplication
+  ACROSS the room. Different problems — most sets want both.
+- **TV and seat face each other**, on opposite walls, same axis, validated
+  before anything is written (an appended tile cannot be taken back).
+- **A whole couch or an armchair, never half.** Validate anchor square, partner
+  square AND partner sprite together, and try every candidate in the group
+  before demoting — one bad sprite should cost that couch, not the room.
+- **Nothing between seat and screen** (`inSightline`). Caught the bookcase and
+  the wall shelf doing it.
+- **Kitchen:** no seating, no loose side tables, no free-standing bookcase.
+- Shelves flat against a wall, no door or window behind, open floor in front.
+
+### `unique()` interactions worth remembering
+
+`density.skip` thins a REPEATING run. Applied to a unique set it does not thin,
+it deletes — that is how kitchens lost their stove. Same for the aisle stride:
+it spaces repeated copies, but striding past the one reachable square on a
+cramped wall just loses the object. Unique sets ignore the skip roll and scan
+every position.
+
+`stampSet` returns whether it wrote anything. It used to be `void` and
+`stampWallRun` marked success on the ATTEMPT, so a unique set broke out of the
+loop even when every square was taken — the object vanished and the room still
+claimed to have one.
+
+## §E Test harness
+
+`PlacementTest` / `Probe` / `DecorMix`, 48,400 rooms (4–14 per side × 400
+seeds), against stubbed `CellData`/`TilePalette`/`GisCells` that record every
+write. The stub palette deliberately reproduces the real hazards: wall planks
+mixed into the `shelves` groups, a couch whose partner sprite is missing, one
+room edge left unwalled.
+
+**Every assertion is negative-tested.** Back out the fix, confirm the test goes
+red, restore. A check that cannot fail proves nothing — and twice a "passing"
+suite was only passing because the assertion was vacuous.
+
+**The audit decodes sprite facing from the sheet's own layout, not from the
+table the placer picks with**, so a wrong table surfaces as a failure instead of
+confirming its own arithmetic.
+
+Current: ALL RULES HELD. 100% of living rooms furnished, all whole couches;
+258,756 kitchen fixtures facing into the room, 0 into a wall; 0 pieces leaning
+on an unwalled edge.
+
+## §F Open items
+
+- **Rugs** — off entirely. Need one complete rug: every tile name in the block,
+  the block shape (2×2? 2×3?), and whether index order runs east-then-south.
+- **Floor lamps, piano** — no confirmed sprites. Only the table lamp
+  (`lighting_indoor_02_35`, `IsTableTop`) is known.
+- **Corner wall shelves** — `_20` "Corner A": which corner is it cut for, and
+  what are the other three? Hanging it on a flat wall is the "corner shelves not
+  even in a corner" defect.
+- **Wooden wall shelf (`_21`)** — parked. Floated three builds running; the wall
+  line fix (§A) is the thing that was actually missing. Restore it gated and
+  verify before trusting it.
+- **`furniture_shelving_01_0` / `_2`** — palette calls these `shelvesN`/
+  `shelvesW`, which contradicts the S,E,W,N order in §C. Resolve whether the
+  suffix means facing or attachment wall.
+- **Wall art on non-north walls** — the gallery pair is the only wall decoration
+  with a recorded orientation and it is the attachedN variant.
+- **Microwave** — restricted to north-facing worktops (`_27`, the only recorded
+  facing), so it is rare. Other three facings need confirming.
+- **Roof pitch on tall buildings** — see §G.
+
+## §G Roof slope tiles ignore ridge orientation — OPEN BUG
+
+`GisCells` computes `slopeAlongY = bw >= bh` and varies `pos` along the correct
+axis, **but emits `roofs_30_02_<n>` in both cases**. Roof sprites have a baked-in
+orientation: a slope falling north-south is a different sprite from one falling
+east-west. So on any building taller than wide the pitch geometry is rotated 90°
+and the tiles are not.
+
+In the current test area that is buildings **3 and 4 (both 12x13)**; 12x11 and
+17x10 are fine.
+
+The gable pass already knows — `if (bw < bh) continue;  // north-south ridge:
+not measured` — but the slope pass never got the same guard.
+
+Two ways forward:
+1. Measure the perpendicular slope range on a vanilla north-south-ridged
+   building and add the second tile range.
+2. Interim: give `bw < bh` buildings a flat roof, matching what the gable code
+   already does, so nothing ships visibly rotated.
+   
