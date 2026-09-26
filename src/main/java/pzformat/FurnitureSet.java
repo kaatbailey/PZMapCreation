@@ -44,37 +44,60 @@ public final class FurnitureSet {
      *                    'N' → wall square is one row north (wy-1). 'S' → wy+1. 'W' → wx-1. 'E' → wx+1.
      * @param onTop       stacks on an already-occupied square (stack)
      */
-    public record Tile(int dx, int dy, String tile,
+    /**
+     * @param role        palette role resolved at placement time (e.g. "couch", "television").
+     *                    When non-null, stampSet calls resolve(role, wallFacing) + put() so
+     *                    the correct directional sprite is picked automatically for whichever
+     *                    wall the stamp lands on. Mutually exclusive with an explicit tile name.
+     */
+    public record Tile(int dx, int dy, String tile, String role,
                        boolean wallMounted, char wallDir, boolean onTop) {
 
-        /** Floor object — the common case. */
+        /** Floor object with an explicit tile name. */
         public static Tile floor(int dx, int dy, String tile) {
-            return new Tile(dx, dy, tile, false, ' ', false);
+            return new Tile(dx, dy, tile, null, false, ' ', false);
+        }
+
+        /**
+         * Floor object resolved from a palette role at stamp-time.
+         * The wall direction passed to stampSet becomes the facing, so a couch
+         * placed on the S wall automatically gets its FacingN sprite.
+         */
+        public static Tile role(int dx, int dy, String role) {
+            return new Tile(dx, dy, null, role, false, ' ', false);
+        }
+
+        /**
+         * On-top object resolved from a palette role at stamp-time.
+         * Use for a TV on a table: the correct facing variant is picked automatically.
+         */
+        public static Tile roleTop(int dx, int dy, String role) {
+            return new Tile(dx, dy, null, role, false, ' ', true);
         }
 
         /** Object mounted on the NORTH wall (tile sits at ry+1, wall square at ry). */
         public static Tile wallN(int dx, int dy, String tile) {
-            return new Tile(dx, dy, tile, true, 'N', false);
+            return new Tile(dx, dy, tile, null, true, 'N', false);
         }
 
         /** Object mounted on the SOUTH wall (tile sits at ry-1, wall square at ry). */
         public static Tile wallS(int dx, int dy, String tile) {
-            return new Tile(dx, dy, tile, true, 'S', false);
+            return new Tile(dx, dy, tile, null, true, 'S', false);
         }
 
         /** Object mounted on the WEST wall (tile sits at rx+1, wall square at rx). */
         public static Tile wallW(int dx, int dy, String tile) {
-            return new Tile(dx, dy, tile, true, 'W', false);
+            return new Tile(dx, dy, tile, null, true, 'W', false);
         }
 
         /** Object mounted on the EAST wall (tile sits at rx-1, wall square at rx). */
         public static Tile wallE(int dx, int dy, String tile) {
-            return new Tile(dx, dy, tile, true, 'E', false);
+            return new Tile(dx, dy, tile, null, true, 'E', false);
         }
 
         /** Object stacked on an already-placed floor tile (IsTableTop). */
         public static Tile top(int dx, int dy, String tile) {
-            return new Tile(dx, dy, tile, false, ' ', true);
+            return new Tile(dx, dy, tile, null, false, ' ', true);
         }
     }
 
@@ -108,12 +131,15 @@ public final class FurnitureSet {
     public final int minRoomDim;
 
     private FurnitureSet(String name, int w, int h, int minRoomDim, boolean wallRun,
+                         boolean unique, List<String> provides,
                          List<String> roomTypes, List<Tile> tiles) {
         this.name       = name;
         this.w          = w;
         this.h          = h;
         this.minRoomDim = minRoomDim;
         this.wallRun    = wallRun;
+        this.unique     = unique;
+        this.provides   = List.copyOf(provides);
         this.roomTypes  = roomTypes;
         this.tiles      = List.copyOf(tiles);
     }
@@ -130,12 +156,39 @@ public final class FurnitureSet {
      */
     public final boolean wallRun;
 
+    /**
+     * When true, stampWallRun places this set at most ONCE per wall call,
+     * even if the wall is wide enough to fit it several times. Use for
+     * living-room hero pieces (TV, couch) that should appear once, not as
+     * a repeating run.
+     */
+    public final boolean unique;
+
+    /**
+     * Fixture classes this set supplies to the room.
+     *
+     * A room may hold at most ONE set for each class. This is what stops a
+     * kitchen collecting a counter run on the north wall, a second counter run
+     * on the west wall and a standalone fridge on top of both — the bug that
+     * produced three sinks and two ovens in one room.
+     *
+     * unique() constrains repetition ALONG ONE WALL. provides() constrains
+     * duplication ACROSS the whole room. They are different problems and a set
+     * usually wants both.
+     *
+     * Empty means the set is unconstrained and may coexist with anything
+     * (shelves, paintings, decorative pieces).
+     */
+    public final List<String> provides;
+
     public static final class Builder {
         private final String name;
         private final int w, h, minRoomDim;
         private final List<String> roomTypes;
         private final List<Tile> tiles = new ArrayList<>();
+        private final List<String> provides = new ArrayList<>();
         private boolean wallRun = false;
+        private boolean unique  = false;
 
         public Builder(String name, int w, int h, int minRoomDim,
                        String... roomTypes) {
@@ -149,16 +202,37 @@ public final class FurnitureSet {
         /** Mark this set as a wall-run: place along one wall, not tiled across floor. */
         public Builder wallRun() { this.wallRun = true; return this; }
 
+        /**
+         * Mark this set as unique: place at most once per wall even when the
+         * wall is wide enough for multiple copies. Use for hero pieces (TV, couch).
+         */
+        public Builder unique()  { this.unique  = true; return this; }
+
+        /**
+         * Declare the fixture classes this set supplies. Once a set providing
+         * "counter_run" has landed, no other counter_run set is attempted in
+         * that room — one kitchen per kitchen.
+         */
+        public Builder provides(String... classes) {
+            for (String c : classes) this.provides.add(c);
+            return this;
+        }
+
         public Builder add(Tile t)                      { tiles.add(t); return this; }
-        public Builder floor(int dx, int dy, String t)  { return add(Tile.floor(dx, dy, t)); }
-        public Builder wallN(int dx, int dy, String t)  { return add(Tile.wallN(dx, dy, t)); }
-        public Builder wallS(int dx, int dy, String t)  { return add(Tile.wallS(dx, dy, t)); }
-        public Builder wallW(int dx, int dy, String t)  { return add(Tile.wallW(dx, dy, t)); }
-        public Builder wallE(int dx, int dy, String t)  { return add(Tile.wallE(dx, dy, t)); }
-        public Builder top  (int dx, int dy, String t)  { return add(Tile.top  (dx, dy, t)); }
+        public Builder floor  (int dx, int dy, String t) { return add(Tile.floor  (dx, dy, t)); }
+        public Builder wallN  (int dx, int dy, String t) { return add(Tile.wallN  (dx, dy, t)); }
+        public Builder wallS  (int dx, int dy, String t) { return add(Tile.wallS  (dx, dy, t)); }
+        public Builder wallW  (int dx, int dy, String t) { return add(Tile.wallW  (dx, dy, t)); }
+        public Builder wallE  (int dx, int dy, String t) { return add(Tile.wallE  (dx, dy, t)); }
+        public Builder top    (int dx, int dy, String t) { return add(Tile.top    (dx, dy, t)); }
+        /** Floor object resolved from palette at stamp-time (e.g. couch). */
+        public Builder role   (int dx, int dy, String r) { return add(Tile.role   (dx, dy, r)); }
+        /** On-top object resolved from palette at stamp-time (e.g. television). */
+        public Builder roleTop(int dx, int dy, String r) { return add(Tile.roleTop(dx, dy, r)); }
 
         public FurnitureSet build() {
-            return new FurnitureSet(name, w, h, minRoomDim, wallRun, roomTypes, tiles);
+            return new FurnitureSet(name, w, h, minRoomDim, wallRun, unique,
+                    provides, roomTypes, tiles);
         }
     }
 
@@ -434,7 +508,7 @@ public final class FurnitureSet {
      */
     public static final FurnitureSet OFFICE_PAINTING = new Builder(
             "office_painting", 2, 1, 4,
-            "office", "lobby", "livingroom")
+            "office", "lobby")
         // Both tiles are wall-mounted (FacingS = on N wall)
         .wallN(0, 0, "location_entertainment_gallery_01_24")
         .wallN(1, 0, "location_entertainment_gallery_01_25")
@@ -775,6 +849,226 @@ public final class FurnitureSet {
         .floor(2, 3, "trashcontainers_01_18")
         .build();
 
+    // ------------------------------------------------------------------
+    // RESIDENTIAL KITCHEN SETS  (from room_scans.txt, session 3)
+    // ------------------------------------------------------------------
+
+    /**
+     * SET RK1 — Residential kitchen: N-wall counter run (FacingS).
+     * Source: coord 13615,2127 and 13651,2082 (5×4 rooms), room_scans.txt.
+     * Pattern seen repeatedly in vanilla: counter + oven + counter+sink + fridge
+     * all along the north wall, facing south into the room.
+     * Bounding box: 4 wide × 1 tall. wallRun → placed along N or S wall.
+     */
+    public static final FurnitureSet KITCHEN_COUNTER_RUN_N = new Builder(
+            "kitchen_counter_run_n", 4, 1, 4,
+            "kitchen")
+        .wallRun()
+        .unique()                                        // no repeat along the wall
+        .provides("counter_run", "sink", "oven", "fridge")  // and nothing else supplies these
+        // Every piece is role-resolved. The stamper prefers door-free walls, so
+        // this run lands on the SOUTH wall as often as the north — with the old
+        // hardcoded FacingS sprites the whole kitchen then faced into the wall.
+        .role   (0, 0, "counter")
+        .role   (1, 0, "oven")
+        .role   (2, 0, "counter")
+        .roleTop(2, 0, "sink")                           // rides on the counter below
+        .role   (3, 0, "fridge")
+        .build();
+
+    /**
+     * SET RK2 — Residential kitchen: W-wall counter run (FacingW).
+     * Source: coord 13442,2109 large scan (lines 706-724), room_scans.txt.
+     * Pattern: counter+sink stacked vertically against the W wall (FacingW = faces east).
+     * Then fridge at the bottom. The stamper places this along the W wall.
+     * Bounding box: 1 wide × 3 tall. wallRun → placed along W wall (same N-wall logic,
+     * stampWallRun handles alignment).
+     */
+    public static final FurnitureSet KITCHEN_COUNTER_RUN_W = new Builder(
+            "kitchen_counter_run_w", 1, 3, 4,
+            "kitchen")
+        .wallRun()
+        .unique()
+        .provides("counter_run", "sink", "fridge")       // no oven on this run
+        .role   (0, 0, "counter")
+        .roleTop(0, 0, "sink")                           // rides on the counter below
+        .role   (0, 1, "counter")
+        .role   (0, 2, "fridge")
+        .build();
+
+    /**
+     * SET RK3 — Residential kitchen: minimal 3-unit N-wall run (tiny room safe).
+     * Source: coord 13651,2082 (4×3 kitchen), room_scans.txt.
+     * For very small kitchens: counter + oven + counter (no fridge on this run).
+     * minRoomDim=3 so it fits in the smallest rooms.
+     * Bounding box: 3 wide × 1 tall. wallRun.
+     */
+    public static final FurnitureSet KITCHEN_COUNTER_MINI = new Builder(
+            "kitchen_counter_mini", 3, 1, 3,
+            "kitchen")
+        .wallRun()
+        .unique()
+        .provides("counter_run", "sink", "oven")         // no fridge on this run
+        .role   (0, 0, "counter")
+        .roleTop(0, 0, "sink")                           // rides on the counter below
+        .role   (1, 0, "oven")
+        .role   (2, 0, "counter")
+        .build();
+
+    /**
+     * SET RK6 — Residential kitchen: single counter with a sink (any wall).
+     *
+     * A 4x4 kitchen has a 2x2 usable interior once the wall margins are taken,
+     * and no counter run in this catalogue fits that. Without this set those
+     * rooms came out with a fridge and a stove but nowhere to wash up. One
+     * counter tile with the sink on top is the smallest thing that still reads
+     * as a kitchen.
+     *
+     * Claims only "sink", so it is refused whenever a real counter run has
+     * already landed — the runs are tried first and carry their own sink.
+     * minRoomDim=3. Bounding box: 1 wide × 1 tall. wallRun.
+     */
+    public static final FurnitureSet KITCHEN_SINK = new Builder(
+            "kitchen_sink", 1, 1, 3,
+            "kitchen")
+        .wallRun()
+        .unique()
+        .provides("sink")
+        .role   (0, 0, "counter")
+        .roleTop(0, 0, "sink")
+        .build();
+
+    /**
+     * SET RK5 — Residential kitchen: standalone oven (any wall).
+     *
+     * A narrow kitchen only has room for KITCHEN_COUNTER_RUN_W, which carries a
+     * sink and a fridge but no stove. Every kitchen needs somewhere to cook, so
+     * this fills that gap the same way KITCHEN_FRIDGE fills the missing fridge
+     * after KITCHEN_COUNTER_MINI.
+     *
+     * The tile is resolved through the "oven" role so it faces into the room
+     * from whichever wall it lands on — see DIRECTIONAL_OVERRIDES in
+     * FurniturePlacer, since the palette has no oven_N/_S/_E/_W split.
+     * minRoomDim=3. Bounding box: 1 wide × 1 tall. wallRun.
+     */
+    public static final FurnitureSet KITCHEN_OVEN = new Builder(
+            "kitchen_oven", 1, 1, 3,
+            "kitchen")
+        .wallRun()
+        .unique()
+        // Only lands when the chosen counter run did not already bring an oven.
+        .provides("oven")
+        .role(0, 0, "oven")
+        .build();
+
+    /**
+     * SET RK4 — Residential kitchen: standalone fridge (any wall).
+     * Used when the room is too small for a counter run, or as a second wall object.
+     * minRoomDim=3. Bounding box: 1 wide × 1 tall. wallRun.
+     */
+    public static final FurnitureSet KITCHEN_FRIDGE = new Builder(
+            "kitchen_fridge", 1, 1, 3,
+            "kitchen")
+        .wallRun()
+        .unique()
+        // Only lands when the chosen counter run did not already bring a fridge
+        // (i.e. after KITCHEN_COUNTER_MINI). Never a second fridge.
+        .provides("fridge")
+        .role(0, 0, "fridge")   // facing resolved from wall direction automatically
+        .build();
+
+    // ------------------------------------------------------------------
+    // RESIDENTIAL LIVINGROOM SETS  (from room_scans.txt, session 3)
+    //
+    // NOTE: the TV and the seat are no longer placed through the generic
+    // wall-run stamper. That machinery put horizontal sets on N/S walls and
+    // square sets on the PERPENDICULAR wall, so a chair could only ever end up
+    // at 90 degrees to the television. FurniturePlacer.livingroomLayout() now
+    // places the pair directly on opposite walls, aligned on the same axis, so
+    // somebody sitting down is looking at the screen. LIVINGROOM_COUCH,
+    // LIVINGROOM_TV and LIVINGROOM_CHAIR below are kept as the measured
+    // reference for those pieces; only LIVINGROOM_SHELVES_N is still stamped.
+    // ------------------------------------------------------------------
+
+    /**
+     * SET LR1 — Couch (direction-agnostic, palette-resolved).
+     * Source: coord 13442,2109 (g sym) and 13374,2082 (h sym), room_scans.txt.
+     * Bounding box: 2 wide × 1 tall. wallRun → placed on N or S wall (hSet, w > h).
+     * unique → placed once (hero piece, not a repeating run).
+     *
+     * At stamp-time stampSet passes the wall's inward facing to resolve("couch", facing):
+     *   S wall → facing 'N'  →  couch_N group (back against S wall, seats face north)
+     *   N wall → facing 'S'  →  couch_S group (back against N wall, seats face south)
+     * put() detects isPairedRole("couch") and extends the second tile east (N/S) or
+     * south (E/W) automatically — no hardcoded tile indices needed.
+     */
+    public static final FurnitureSet LIVINGROOM_COUCH = new Builder(
+            "livingroom_couch", 2, 1, 4,
+            "livingroom")
+        .wallRun()
+        .unique()
+        .role(0, 0, "couch")
+        .build();
+
+    /**
+     * SET LR2 — TV on low table (direction-agnostic, palette-resolved TV).
+     * Source: coord 13442,2109 (b/c sym) and 12887,1822 (d/e sym), room_scans.txt.
+     * Low table + television on top + decorative shelf beside it.
+     * Bounding box: 2 wide × 1 tall. wallRun → N or S wall (hSet, w > h).
+     * unique → TV appears once.
+     *
+     * The low table is hardcoded (minor cosmetic variance is fine).
+     * The television is resolved from the palette at stamp-time so it faces into
+     * the room automatically (facing = opposite of the wall it's on):
+     *   N wall → facing 'S'  →  television_S sprite
+     *   S wall → facing 'N'  →  television_N sprite
+     * roleTop stacks on the SURFACE square the floor(0,0) table creates.
+     */
+    public static final FurnitureSet LIVINGROOM_TV = new Builder(
+            "livingroom_tv", 2, 1, 4,
+            "livingroom")
+        .wallRun()
+        .unique()
+        .floor  (0, 0, "furniture_tables_low_01_17")  // Light Low Table (surface for TV)
+        .roleTop(0, 0, "television")                   // TV facing auto-selected from wall direction
+        .floor  (1, 0, "furniture_shelving_01_44")     // White Fancy Shelves
+        .build();
+
+    /**
+     * SET LR3 — Shelves on N wall (single-tile, FacingS).
+     * Source: coord 13374,2082 (g sym), room_scans.txt.
+     * Oakwood shelves for variety. Horizontal: w==h square, goes on any wall.
+     * Bounding box: 1 wide × 1 tall. wallRun.
+     */
+    public static final FurnitureSet LIVINGROOM_SHELVES_N = new Builder(
+            "livingroom_shelves_n", 1, 1, 3,
+            "livingroom")
+        .wallRun()
+        .unique()
+        .provides("shelves")
+        // NOT the "shelves" role: that palette group mixes wall-mounted planks
+        // in with the floor bookcases, and a wall sprite dropped on a floor
+        // square hangs in mid-air. Named floor bookcase only.
+        // Superseded anyway — FurniturePlacer.placeShelfAgainstWall() places the
+        // living-room shelf now, so this set is reference, not live.
+        .floor(0, 0, "furniture_shelving_01_40")   // Oakwood Shelves FacingS
+        .build();
+
+    /**
+     * SET LR4 — Soft chair (single-tile, square, any wall).
+     * Source: coord 12887,1822 (g sym) and 13442,2109 (h sym), room_scans.txt.
+     * Blue Comfy Chair FacingS — placed on N wall facing into room.
+     * Bounding box: 1 wide × 1 tall. wallRun.
+     * unique → one chair per room, not a row of chairs.
+     */
+    public static final FurnitureSet LIVINGROOM_CHAIR = new Builder(
+            "livingroom_chair", 1, 1, 3,
+            "livingroom")
+        .wallRun()
+        .unique()
+        .role(0, 0, "chair_soft")   // facing resolved from wall direction automatically
+        .build();
+
     // ==================================================================
     // CATALOGUE LOOKUP
     // ==================================================================
@@ -793,7 +1087,13 @@ public final class FurnitureSet {
             LARGE_APPLIANCE_BANK, ARCADE_ZONE, HEAVY_KITCHEN,
             // Bathroom
             BATHROOM_STALL_BLOCK_N, BATHROOM_STALL_BLOCK_W,
-            SINK_MIRROR_UNIT, FULL_COMMERCIAL_BATHROOM
+            SINK_MIRROR_UNIT, FULL_COMMERCIAL_BATHROOM,
+            // Residential kitchen
+            KITCHEN_COUNTER_RUN_N, KITCHEN_COUNTER_RUN_W,
+            KITCHEN_COUNTER_MINI, KITCHEN_FRIDGE, KITCHEN_OVEN, KITCHEN_SINK,
+            // Residential livingroom
+            LIVINGROOM_COUCH, LIVINGROOM_TV,
+            LIVINGROOM_SHELVES_N, LIVINGROOM_CHAIR
     );
 
     /**

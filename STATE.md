@@ -172,7 +172,7 @@ commercial kitchens, library) — rescan needed with nudged coordinates.
 - `office` → STAMP("office") with desk+chair perimeter fallback
 - `breakroom` → STAMP("breakroom") with table+chair perimeter fallback
 - `bathroom` commercial → AUTHORED (see below)
-- `bathroom` residential → PERIMETER (toilet + counter + sink + bath)
+- `bathroom` residential → STAMP (toilet + counter + sink + bath)
 - `hall` → PERIMETER (bench, bin, plant)
 - All others → unchanged from session 2
 

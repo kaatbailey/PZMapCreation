@@ -231,6 +231,11 @@ public final class FurnitureProfile {
                 List.of(), null, decor, roomType);
     }
 
+    /** Stamp with no perimeter activities and default decor budget. */
+    static FurnitureProfile stamp(String roomType) {
+        return stamp(roomType, 2);
+    }
+
     /**
      * A room whose layout is authored explicitly in FurniturePlacer.authoredLayout().
      * Activities are perimeter extras placed after the authored pieces.
@@ -272,17 +277,7 @@ public final class FurnitureProfile {
                     Activity.maybe("chair_soft_N", 0.8),
                     Activity.maybe("toilet_N", 0.6));
 
-            case "kitchen" -> perimeter(2,
-                    Activity.run("counter", 4,
-                            Satellite.maybe("sink", Rel.ON_TOP, 0.9),
-                            Satellite.maybe("microwave", Rel.ON_TOP, 0.5),
-                            Satellite.maybe("toaster", Rel.ON_TOP, 0.4),
-                            Satellite.maybe("overhead_N", Rel.ABOVE_ON_WALL, 0.7)),
-                    Activity.of("oven"),       // domestic oven only
-                    Activity.of("fridge"),
-                    Activity.maybe("table", 0.4,
-                            Satellite.of("chair_dining_N", Rel.IN_FRONT),
-                            Satellite.of("chair_dining_S", Rel.BESIDE)));
+            case "kitchen" -> stamp("kitchen", 0);
 
             case "cafeteriakitchen", "restaurant" -> perimeter(1,
                     Activity.run("counter", 5,
@@ -401,20 +396,22 @@ public final class FurnitureProfile {
                     Activity.maybe("workbench", 0.6));
 
             // ---- Living spaces ----
-            case "livingroom" -> perimeter(4,
-                    Activity.of("couch_S",
-                            Satellite.maybe("table", Rel.IN_FRONT, 0.7)),
-                    Activity.maybe("chair_soft_E", 0.6),
-                    Activity.maybe("television", 0.8),
-                    Activity.maybe("chair_soft_E", 0.6),
-                    Activity.maybe("shelves_N", 0.4));
+            // Couch on W/E wall (vertical set), TV+shelves on N wall (horizontal set),
+            // chair as square set on perpendicular wall. No decor, no perimeter.
+            case "livingroom" -> stamp("livingroom", 0);
 
-            case "bedroom", "kidsbedroom" -> perimeter(2,
-                    Activity.of("bed_home",
+            // Bedroom: one bed (maybe → placeAlongLine fires once, not fillLine
+            // repeating across the wall). Toilet removed — was a leftover.
+            case "bedroom" -> perimeter(2,
+                    Activity.maybe("bed_home", 0.95,
                             Satellite.maybe("drawers", Rel.BESIDE, 0.8)),
                     Activity.maybe("wardrobe", 0.7),
-                    Activity.maybe("toilet_N", 0.4),
-                    Activity.maybe("chair_dining_E", 0.2));
+                    Activity.maybe("chair_dining_E", 0.3));
+
+            case "kidsbedroom" -> perimeter(1,
+                    Activity.maybe("bed_home", 0.95,
+                            Satellite.maybe("drawers", Rel.BESIDE, 0.7)),
+                    Activity.maybe("wardrobe", 0.6));
 
             case "diningroom" -> centre(3,
                     Activity.of("table",
