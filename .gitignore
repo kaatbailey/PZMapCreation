@@ -45,3 +45,5 @@ map-output/html/.placement.md.kate-swp
 my_spawnpoints.lua
 rooms.txt
 scan_rooms.fish
+/workspace/
+pzorch/__pycache__/

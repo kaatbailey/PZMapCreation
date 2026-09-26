@@ -139,7 +139,7 @@ body {
     white-space: pre-wrap;
 }
 #result-buttons { display: flex; gap: 10px; }
-#btn-copy {
+#btn-send, #btn-copy {
     background: #446;
     color: #fff;
     border: none;
@@ -148,7 +148,7 @@ body {
     cursor: pointer;
     font-family: monospace;
 }
-#btn-copy:hover { background: #557; }
+#btn-send:hover, #btn-copy:hover { background: #557; }
 #btn-close {
     background: #333;
     color: #ccc;
@@ -224,9 +224,11 @@ body {
         <p>Java generation command:</p>
         <div id="cmd-display"></div>
         <div id="result-buttons">
+            <button id="btn-send">Send to Orchestrator</button>
             <button id="btn-copy">Copy Command</button>
             <button id="btn-close">Close</button>
         </div>
+        <div id="send-status" style="margin-top:10px;font-size:13px;color:#9ca3af;"></div>
     </div>
 </div>
 
@@ -237,15 +239,27 @@ body {
 // ---------------------------------------------------------------------------
 // Configuration — edit these if your paths or GIS map size change
 // ---------------------------------------------------------------------------
+// Which mod map to overlay. The orchestrator links here as
+//   placement.html?mod=<modName>&project=<projectId>
+// so a project with any mod name gets its own overlay. Falls back to
+// PZGisImport, which is what this page always used before.
+const PARAMS  = new URLSearchParams(window.location.search);
+const MOD     = (PARAMS.get('mod') || 'PZGisImport').replace(/[^A-Za-z0-9_]/g, '');
+const PROJECT = PARAMS.get('project') || '';
+
+// Where the orchestrator is listening. Used only to POST the chosen origin
+// back; if it is not running the page still works as a read-only picker.
+const ORCH = PARAMS.get('orch') || 'http://127.0.0.1:8899';
+
 const CONFIG = {
     // Vanilla map DZI
     vanillaDzi: 'map_data/base_top/layer0.dzi',
     vanillaInfo: 'map_data/base_top/map_info.json',
 
     // GIS mod DZI — rendered by pzmap2dzi as a mod map
-    // After running: python main.py render base_top for PZGisImport mod
-    gisDzi: 'map_data/mod_maps/PZGisImport/base_top/layer0.dzi',
-    gisInfo: 'map_data/mod_maps/PZGisImport/base_top/map_info.json',
+    // After running: python main.py render base_top for the mod named above
+    gisDzi: 'map_data/mod_maps/' + MOD + '/base_top/layer0.dzi',
+    gisInfo: 'map_data/mod_maps/' + MOD + '/base_top/map_info.json',
 
     // Java command template — fill in your actual paths
     javaCmd: [
@@ -256,7 +270,7 @@ const CONFIG = {
         '    ~/pzgis/area.geojson \\',
         '    "$PZ/media" \\',
         '    ~/Zomboid/mods \\',
-        '    PZGisImport 0 {cellX} {cellY}'
+        '    ' + MOD + ' 0 {cellX} {cellY}'
     ].join('\n'),
 };
 
@@ -615,6 +629,49 @@ function setupControls() {
     document.getElementById('btn-close').addEventListener('click', () => {
         document.getElementById('result-panel').classList.remove('visible');
     });
+    const sendBtn = document.getElementById('btn-send');
+    if (!PROJECT) {
+        // Opened by hand rather than from the orchestrator: nothing to send to.
+        sendBtn.style.display = 'none';
+    }
+    sendBtn.addEventListener('click', async () => {
+        const status = document.getElementById('send-status');
+        if (!lastOrigin) { status.textContent = 'Apply a placement first.'; return; }
+        sendBtn.disabled = true;
+        status.textContent = 'Sending...';
+        try {
+            const res = await fetch(
+                ORCH + '/api/projects/' + encodeURIComponent(PROJECT) + '/origin',
+                {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        origin_x: lastOrigin.x,
+                        origin_y: lastOrigin.y
+                    })
+                }
+            );
+            if (!res.ok) {
+                let msg;
+                try {
+                    const d = await res.json();
+                    msg = typeof d.detail === 'string'
+                        ? d.detail : JSON.stringify(d.detail);
+                } catch { msg = await res.text(); }
+                throw new Error(msg);
+            }
+            status.style.color = '#6ee7a8';
+            status.textContent =
+                'Origin ' + lastOrigin.x + ',' + lastOrigin.y +
+                ' saved. Go back to the orchestrator and press Build.';
+        } catch (err) {
+            status.style.color = '#fca5a5';
+            status.textContent = 'Could not reach the orchestrator: ' + err.message;
+        } finally {
+            sendBtn.disabled = false;
+        }
+    });
+
     document.getElementById('btn-copy').addEventListener('click', () => {
         const cmd = document.getElementById('cmd-display').textContent;
         navigator.clipboard.writeText(cmd).then(() => {
@@ -626,9 +683,13 @@ function setupControls() {
     });
 }
 
+let lastOrigin = null;
+
 function applyPlacement() {
     const cellX = Math.floor(gisPixelX / 256);
     const cellY = Math.floor(gisPixelY / 256);
+    lastOrigin = { x: cellX, y: cellY };
+    document.getElementById('send-status').textContent = '';
     const tileX = gisPixelX;
     const tileY = gisPixelY;
 

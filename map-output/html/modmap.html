@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PZGisImport Map Viewer</title>
+<title>Mod Map Viewer</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -105,11 +105,11 @@ body {
 }
 
 #output-buttons { display: flex; gap: 8px; }
-#btn-copy-lua {
+#btn-save-lua, #btn-copy-lua {
     background: #446; color: #fff; border: none;
     padding: 7px 14px; border-radius: 4px; cursor: pointer; font-family: monospace;
 }
-#btn-copy-lua:hover { background: #557; }
+#btn-save-lua:hover, #btn-copy-lua:hover { background: #557; }
 #btn-close-output {
     background: #333; color: #ccc; border: none;
     padding: 7px 14px; border-radius: 4px; cursor: pointer; font-family: monospace;
@@ -126,10 +126,10 @@ body {
 </head>
 <body>
 
-<div id="loading">Loading PZGisImport map...</div>
+<div id="loading">Loading mod map...</div>
 
 <div id="toolbar">
-    <h1>🗺 PZGisImport</h1>
+    <h1>🗺 <span id="mod-label">PZGisImport</span></h1>
     <div id="coords">Tile: —, —  |  Cell: —, —</div>
     <span id="spawn-count">Spawns: 0 / 20</span>
     <button id="btn-generate" disabled>Generate spawnpoints.lua</button>
@@ -144,9 +144,11 @@ body {
 <div id="output-panel">
     <div id="output-box">
         <h2>spawnpoints.lua</h2>
-        <p>Copy this and paste it over ~/Zomboid/mods/PZGisImport/common/media/maps/PZGisImport/spawnpoints.lua</p>
+        <p id="lua-dest">Copy this and paste it over the mod's spawnpoints.lua</p>
         <div id="lua-output"></div>
+        <div id="save-status" style="margin-top:10px;font-size:13px;color:#9ca3af;"></div>
         <div id="output-buttons">
+            <button id="btn-save-lua">Save to project</button>
             <button id="btn-copy-lua">Copy to clipboard</button>
             <button id="btn-close-output">Close</button>
         </div>
@@ -155,8 +157,16 @@ body {
 
 <script src="openseadragon/openseadragon.js"></script>
 <script>
-const DZI      = 'map_data/mod_maps/PZGisImport/base_top/layer0.dzi';
-const INFO_URL = 'map_data/mod_maps/PZGisImport/base_top/map_info.json';
+// Which mod map to view. The orchestrator links here as
+//   modmap.html?mod=<modName>&project=<projectId>
+// Falls back to PZGisImport, which is what this page always used before.
+const PARAMS  = new URLSearchParams(window.location.search);
+const MOD     = (PARAMS.get('mod') || 'PZGisImport').replace(/[^A-Za-z0-9_]/g, '');
+const PROJECT = PARAMS.get('project') || '';
+const ORCH    = PARAMS.get('orch') || 'http://127.0.0.1:8899';
+
+const DZI      = 'map_data/mod_maps/' + MOD + '/base_top/layer0.dzi';
+const INFO_URL = 'map_data/mod_maps/' + MOD + '/base_top/map_info.json';
 const MAX_PINS = 20;
 
 const PROFESSIONS = [
@@ -347,6 +357,61 @@ document.getElementById('btn-generate').addEventListener('click', () => {
 
     document.getElementById('lua-output').textContent = lua;
     document.getElementById('output-panel').classList.add('visible');
+});
+
+// Label the page and the paste destination with the actual mod name.
+(function labelMod() {
+    const lbl = document.getElementById('mod-label');
+    if (lbl) lbl.textContent = MOD;
+    const dest = document.getElementById('lua-dest');
+    if (dest) {
+        dest.textContent = PROJECT
+            ? 'Save this to the project and the orchestrator will re-apply it '
+              + 'after every build.'
+            : 'Copy this and paste it over ~/Zomboid/mods/' + MOD
+              + '/common/media/maps/' + MOD + '/spawnpoints.lua';
+    }
+    const saveBtn = document.getElementById('btn-save-lua');
+    // Nothing to save to unless the orchestrator opened this page.
+    if (saveBtn && !PROJECT) saveBtn.style.display = 'none';
+})();
+
+document.getElementById('btn-save-lua').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-save-lua');
+    const status = document.getElementById('save-status');
+    const lua = document.getElementById('lua-output').textContent;
+    if (!lua.trim()) { status.textContent = 'Generate the Lua first.'; return; }
+    btn.disabled = true;
+    status.style.color = '#9ca3af';
+    status.textContent = 'Saving...';
+    try {
+        const res = await fetch(
+            ORCH + '/api/projects/' + encodeURIComponent(PROJECT) + '/spawnpoints',
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lua: lua })
+            }
+        );
+        if (!res.ok) {
+            let msg;
+            try {
+                const d = await res.json();
+                msg = typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail);
+            } catch { msg = await res.text(); }
+            throw new Error(msg);
+        }
+        const data = await res.json();
+        status.style.color = '#6ee7a8';
+        status.textContent = data.applied_to_mod
+            ? 'Saved and written to the mod. New game required in PZ.'
+            : 'Saved to the project. It will be applied on the next build.';
+    } catch (err) {
+        status.style.color = '#fca5a5';
+        status.textContent = 'Could not reach the orchestrator: ' + err.message;
+    } finally {
+        btn.disabled = false;
+    }
 });
 
 document.getElementById('btn-copy-lua').addEventListener('click', () => {
